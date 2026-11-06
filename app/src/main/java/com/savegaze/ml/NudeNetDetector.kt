@@ -6,7 +6,6 @@ import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
-import com.savegaze.util.toBatchedFloatBuffer
 import com.savegaze.util.toFloatBuffer
 import java.nio.FloatBuffer
 import kotlinx.coroutines.Dispatchers
@@ -72,82 +71,32 @@ class NudeNetDetector(
             val originalWidth = bitmap.width.toFloat()
             val originalHeight = bitmap.height.toFloat()
 
-            // Tall portrait smartphone screens (height > width * 1.3f, e.g. 1080x2340):
-            // Instead of squishing the whole screen into a single 320x320 box (which causes severe ~2.2x vertical distortion
-            // and misses multiple people and fine details like bikini tops, bellies, and thighs),
-            // split into 2 overlapping vertical tiles (top 60% and bottom 60%) and process in a single batched inference (batch=2).
-            val isTallScreen = originalHeight > originalWidth * 1.3f
+            // Run clean single-frame full image inference directly without artificial tile seams.
+            val floatBuffer = bitmap.toFloatBuffer(MODEL_WIDTH, MODEL_HEIGHT)
+            val shape = longArrayOf(1, NUM_CHANNELS.toLong(), MODEL_HEIGHT.toLong(), MODEL_WIDTH.toLong())
+            var inputTensor: OnnxTensor? = null
+            try {
+                inputTensor = OnnxTensor.createTensor(ortEnvironment, floatBuffer, shape)
+                val inputs = mapOf(INPUT_NAME to inputTensor)
+                val results = ortSession.run(inputs)
 
-            if (isTallScreen) {
-                val t1Height = (originalHeight * 0.60f).toInt()
-                val t2Y0 = (originalHeight * 0.40f).toInt()
-                val t2Height = (originalHeight - t2Y0).toInt()
-
-                val tile1 = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, t1Height)
-                val tile2 = Bitmap.createBitmap(bitmap, 0, t2Y0, bitmap.width, t2Height)
-
-                val tiles = listOf(tile1, tile2)
-                val floatBuffer = tiles.toBatchedFloatBuffer(MODEL_WIDTH, MODEL_HEIGHT)
-
-                if (tile1 !== bitmap) tile1.recycle()
-                if (tile2 !== bitmap) tile2.recycle()
-
-                val shape = longArrayOf(2, NUM_CHANNELS.toLong(), MODEL_HEIGHT.toLong(), MODEL_WIDTH.toLong())
-                var inputTensor: OnnxTensor? = null
-                try {
-                    inputTensor = OnnxTensor.createTensor(ortEnvironment, floatBuffer, shape)
-                    val inputs = mapOf(INPUT_NAME to inputTensor)
-                    val results = ortSession.run(inputs)
-
-                    val outputTensor = results.get(OUTPUT_NAME)
-                    if (!outputTensor.isPresent) {
-                        Log.e(TAG, "Output tensor '$OUTPUT_NAME' not found")
-                        results.close()
-                        return@withContext emptyList()
-                    }
-
-                    @Suppress("UNCHECKED_CAST")
-                    val rawOutput = outputTensor.get().value as Array<Array<FloatArray>>
-                    // rawOutput has shape [2, 22, 2100]
-
-                    val detections1 = postProcess(rawOutput[0], originalWidth, t1Height.toFloat(), offsetY = 0f)
-                    val detections2 = postProcess(rawOutput[1], originalWidth, t2Height.toFloat(), offsetY = t2Y0.toFloat())
-
+                val outputTensor = results.get(OUTPUT_NAME)
+                if (!outputTensor.isPresent) {
+                    Log.e(TAG, "Output tensor '$OUTPUT_NAME' not found")
                     results.close()
-                    nms(detections1 + detections2)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Inference failed", e)
-                    emptyList()
-                } finally {
-                    inputTensor?.close()
+                    return@withContext emptyList()
                 }
-            } else {
-                val floatBuffer = bitmap.toFloatBuffer(MODEL_WIDTH, MODEL_HEIGHT)
-                val shape = longArrayOf(1, NUM_CHANNELS.toLong(), MODEL_HEIGHT.toLong(), MODEL_WIDTH.toLong())
-                var inputTensor: OnnxTensor? = null
-                try {
-                    inputTensor = OnnxTensor.createTensor(ortEnvironment, floatBuffer, shape)
-                    val inputs = mapOf(INPUT_NAME to inputTensor)
-                    val results = ortSession.run(inputs)
 
-                    val outputTensor = results.get(OUTPUT_NAME)
-                    if (!outputTensor.isPresent) {
-                        Log.e(TAG, "Output tensor '$OUTPUT_NAME' not found")
-                        results.close()
-                        return@withContext emptyList()
-                    }
-
-                    @Suppress("UNCHECKED_CAST")
-                    val rawOutput = outputTensor.get().value as Array<Array<FloatArray>>
-                    val detections = postProcess(rawOutput[0], originalWidth, originalHeight, offsetY = 0f)
-                    results.close()
-                    nms(detections)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Inference failed", e)
-                    emptyList()
-                } finally {
-                    inputTensor?.close()
-                }
+                @Suppress("UNCHECKED_CAST")
+                val rawOutput = outputTensor.get().value as Array<Array<FloatArray>>
+                val detections = postProcess(rawOutput[0], originalWidth, originalHeight, offsetY = 0f)
+                results.close()
+                nms(detections)
+            } catch (e: Exception) {
+                Log.e(TAG, "Inference failed", e)
+                emptyList()
+            } finally {
+                inputTensor?.close()
             }
         }
     }
@@ -187,8 +136,7 @@ class NudeNetDetector(
             val femaleFaceScore = output[4 + 1][i]
             val maleFaceScore = output[4 + 12][i]
             val isMaleFaceCalibrated = maleFaceScore > femaleFaceScore ||
-                    (maleFaceScore >= 0.018f && femaleFaceScore < 0.45f && maleFaceScore >= femaleFaceScore * 0.10f) ||
-                    (maleFaceScore >= 0.030f && maleFaceScore >= femaleFaceScore * 0.06f)
+                    (femaleFaceScore < 0.35f && maleFaceScore >= 0.035f && maleFaceScore >= femaleFaceScore * 0.25f)
 
             val adjustedBestClassIdx = if (bestClassIdx == 1 && isMaleFaceCalibrated) {
                 12 // classify as FACE_MALE!
@@ -546,6 +494,10 @@ class NudeNetDetector(
                     shields.mapNotNull { s ->
                         var clamped = s
                         for (m in maleFaces) {
+                            val bodyTop = m.box.y1 - 10f
+                            val bodyBottom = m.box.y2 + m.box.height * 5.0f
+                            if (s.y2 < bodyTop || s.y1 > bodyBottom) continue
+
                             val colLeft = m.box.x1 - m.box.width * 0.35f
                             val colRight = m.box.x2 + m.box.width * 0.35f
                             if (clamped.centerX in colLeft..colRight) return@mapNotNull null
@@ -566,6 +518,10 @@ class NudeNetDetector(
                     shields.mapNotNull { s ->
                         var clamped = s
                         for (f in femaleFaces) {
+                            val bodyTop = f.box.y1 - 10f
+                            val bodyBottom = f.box.y2 + f.box.height * 5.0f
+                            if (s.y2 < bodyTop || s.y1 > bodyBottom) continue
+
                             val colLeft = f.box.x1 - f.box.width * 0.35f
                             val colRight = f.box.x2 + f.box.width * 0.35f
                             if (clamped.centerX in colLeft..colRight) return@mapNotNull null
@@ -589,9 +545,12 @@ class NudeNetDetector(
                 if (maleFaces.isNotEmpty()) {
                     rawToBlur.filterNot { b ->
                         maleFaces.any { m ->
+                            val bodyTop = m.box.y1 - 10f
+                            val bodyBottom = m.box.y2 + m.box.height * 5.0f
+                            val inY = b.box.y1 < bodyBottom && b.box.y2 > bodyTop
                             val colLeft = m.box.x1 - m.box.width * 0.45f
                             val colRight = m.box.x2 + m.box.width * 0.45f
-                            b.box.centerX in colLeft..colRight
+                            inY && b.box.centerX in colLeft..colRight
                         }
                     }
                 } else rawToBlur
@@ -600,9 +559,12 @@ class NudeNetDetector(
                 if (femaleFaces.isNotEmpty()) {
                     rawToBlur.filterNot { b ->
                         femaleFaces.any { f ->
+                            val bodyTop = f.box.y1 - 10f
+                            val bodyBottom = f.box.y2 + f.box.height * 5.0f
+                            val inY = b.box.y1 < bodyBottom && b.box.y2 > bodyTop
                             val colLeft = f.box.x1 - f.box.width * 0.45f
                             val colRight = f.box.x2 + f.box.width * 0.45f
-                            b.box.centerX in colLeft..colRight
+                            inY && b.box.centerX in colLeft..colRight
                         }
                     }
                 } else rawToBlur
@@ -711,7 +673,7 @@ class NudeNetDetector(
                 }
                 c.upper.isNotEmpty() -> {
                     val upperH = c.upper.maxOf { it.box.height }
-                    val extent = if (hasArmpits) maxOf(upperH * 2.0f, 250f) else minOf(upperH * 0.35f, 40f)
+                    val extent = if (hasArmpits) maxOf(upperH * 1.8f, 240f) else minOf(upperH * 0.35f, 40f)
                     c.maxY + extent
                 }
                 c.feet.isNotEmpty() -> {
@@ -745,8 +707,9 @@ class NudeNetDetector(
             var torsoX2 = maxOf(c.maxX + padX, intimateMaxX + padX)
 
             if (matchingFace != null) {
-                torsoX1 = minOf(torsoX1, matchingFace.box.centerX - faceW * 1.1f).coerceAtLeast(0f)
-                torsoX2 = maxOf(torsoX2, matchingFace.box.centerX + faceW * 1.1f)
+                val span = if (hasArmpits) faceW * 0.95f else faceW * 0.85f
+                torsoX1 = minOf(torsoX1, matchingFace.box.centerX - span).coerceAtLeast(0f)
+                torsoX2 = maxOf(torsoX2, matchingFace.box.centerX + span)
             }
 
             // Ensure intimate parts are NEVER clipped:

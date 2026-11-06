@@ -686,6 +686,26 @@ class DetectionFilterTest {
         assertFalse(bothFiltered.hasNsfwContent)
     }
 
+    @Test
+    fun testMaleFaceInBottomThumbnailDoesNotCutFemaleBreastShield() {
+        // Sydney Sweeney at top (x=160..400, y=250..700)
+        val femaleFace = Detection(NudeLabel.FACE_FEMALE, 0.88f, BoundingBox(162f, 266f, 311f, 425f))
+        val femaleBreast1 = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.83f, BoundingBox(264f, 568f, 404f, 697f))
+        val femaleBreast2 = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.78f, BoundingBox(156f, 573f, 277f, 698f))
+
+        // Male face in a tiny thumbnail at the bottom of the screen (x=312..388, y=899..936)
+        val thumbnailMaleFace = Detection(NudeLabel.FACE_MALE, 0.65f, BoundingBox(312f, 899f, 388f, 936f))
+
+        val detections = listOf(femaleFace, femaleBreast1, femaleBreast2, thumbnailMaleFace)
+        val filtered = filterDetectionsHelper(detections, GenderFilter.FEMALE_ONLY)
+
+        assertTrue("Female must produce blur shield", filtered.mergedBlurBoxes.isNotEmpty())
+        val shield = filtered.mergedBlurBoxes.first { it.y1 in 200f..500f }
+        // Female breast shield must NOT be clipped or removed by the distant thumbnail male face!
+        assertTrue("Female shield must cover right breast (x2 >= 400f, was ${shield.x2})", shield.x2 >= 400f)
+        assertTrue("Female shield must cover left breast (x1 <= 160f, was ${shield.x1})", shield.x1 <= 160f)
+    }
+
     // Helper implementing the exact filtering logic from NudeNetDetector
     private enum class ClusterGender {
         FEMALE,
@@ -958,6 +978,10 @@ class DetectionFilterTest {
                     shields.mapNotNull { s ->
                         var clamped = s
                         for (m in maleFaces) {
+                            val bodyTop = m.box.y1 - 10f
+                            val bodyBottom = m.box.y2 + m.box.height * 5.0f
+                            if (s.y2 < bodyTop || s.y1 > bodyBottom) continue
+
                             val colLeft = m.box.x1 - m.box.width * 0.35f
                             val colRight = m.box.x2 + m.box.width * 0.35f
                             if (clamped.centerX in colLeft..colRight) return@mapNotNull null
@@ -978,6 +1002,10 @@ class DetectionFilterTest {
                     shields.mapNotNull { s ->
                         var clamped = s
                         for (f in femaleFaces) {
+                            val bodyTop = f.box.y1 - 10f
+                            val bodyBottom = f.box.y2 + f.box.height * 5.0f
+                            if (s.y2 < bodyTop || s.y1 > bodyBottom) continue
+
                             val colLeft = f.box.x1 - f.box.width * 0.35f
                             val colRight = f.box.x2 + f.box.width * 0.35f
                             if (clamped.centerX in colLeft..colRight) return@mapNotNull null
@@ -1001,9 +1029,12 @@ class DetectionFilterTest {
                 if (maleFaces.isNotEmpty()) {
                     rawToBlur.filterNot { b ->
                         maleFaces.any { m ->
+                            val bodyTop = m.box.y1 - 10f
+                            val bodyBottom = m.box.y2 + m.box.height * 5.0f
+                            val inY = b.box.y1 < bodyBottom && b.box.y2 > bodyTop
                             val colLeft = m.box.x1 - m.box.width * 0.45f
                             val colRight = m.box.x2 + m.box.width * 0.45f
-                            b.box.centerX in colLeft..colRight
+                            inY && b.box.centerX in colLeft..colRight
                         }
                     }
                 } else rawToBlur
@@ -1012,9 +1043,12 @@ class DetectionFilterTest {
                 if (femaleFaces.isNotEmpty()) {
                     rawToBlur.filterNot { b ->
                         femaleFaces.any { f ->
+                            val bodyTop = f.box.y1 - 10f
+                            val bodyBottom = f.box.y2 + f.box.height * 5.0f
+                            val inY = b.box.y1 < bodyBottom && b.box.y2 > bodyTop
                             val colLeft = f.box.x1 - f.box.width * 0.45f
                             val colRight = f.box.x2 + f.box.width * 0.45f
-                            b.box.centerX in colLeft..colRight
+                            inY && b.box.centerX in colLeft..colRight
                         }
                     }
                 } else rawToBlur
@@ -1122,7 +1156,7 @@ class DetectionFilterTest {
                 }
                 c.upper.isNotEmpty() -> {
                     val upperH = c.upper.maxOf { it.box.height }
-                    val extent = if (hasArmpits) maxOf(upperH * 2.0f, 250f) else minOf(upperH * 0.35f, 40f)
+                    val extent = if (hasArmpits) maxOf(upperH * 1.8f, 240f) else minOf(upperH * 0.35f, 40f)
                     c.maxY + extent
                 }
                 c.feet.isNotEmpty() -> {
@@ -1156,8 +1190,9 @@ class DetectionFilterTest {
             var torsoX2 = maxOf(c.maxX + padX, intimateMaxX + padX)
 
             if (matchingFace != null) {
-                torsoX1 = minOf(torsoX1, matchingFace.box.centerX - faceW * 1.1f).coerceAtLeast(0f)
-                torsoX2 = maxOf(torsoX2, matchingFace.box.centerX + faceW * 1.1f)
+                val span = if (hasArmpits) faceW * 0.95f else faceW * 0.85f
+                torsoX1 = minOf(torsoX1, matchingFace.box.centerX - span).coerceAtLeast(0f)
+                torsoX2 = maxOf(torsoX2, matchingFace.box.centerX + span)
             }
 
             // Ensure intimate parts are NEVER clipped:

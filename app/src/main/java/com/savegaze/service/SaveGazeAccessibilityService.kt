@@ -507,22 +507,30 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 filtered.faces.map { it.box }
             }
 
-            // In FEMALE_ONLY mode: purge any candidate or tracked boxes touching male columns
+            // In FEMALE_ONLY mode: purge any candidate or tracked boxes touching male body bounds
             if (genderFilter == GenderFilter.FEMALE_ONLY) {
                 val maleFaces = filtered.faces.filter { it.label == com.savegaze.ml.NudeLabel.FACE_MALE }
                 if (maleFaces.isNotEmpty()) {
                     candidateBoxes.removeAll { c ->
                         maleFaces.any { m ->
-                            val colLeft = m.box.x1 - m.box.width * 0.55f
-                            val colRight = m.box.x2 + m.box.width * 0.55f
-                            c.centerX in colLeft..colRight || (c.x1 < colRight && c.x2 > colLeft)
+                            val bodyTop = m.box.y1 - 10f
+                            val bodyBottom = m.box.y2 + m.box.height * 5.0f
+                            val inY = c.y1 < bodyBottom && c.y2 > bodyTop
+                            val colLeft = m.box.x1 - m.box.width * 0.45f
+                            val colRight = m.box.x2 + m.box.width * 0.45f
+                            val inX = c.centerX in colLeft..colRight || (c.x1 < colRight && c.x2 > colLeft)
+                            inX && inY
                         }
                     }
                     trackedBoxes.removeAll { t ->
                         maleFaces.any { m ->
-                            val colLeft = m.box.x1 - m.box.width * 0.55f
-                            val colRight = m.box.x2 + m.box.width * 0.55f
-                            t.box.centerX in colLeft..colRight || (t.box.x1 < colRight && t.box.x2 > colLeft)
+                            val bodyTop = m.box.y1 - 10f
+                            val bodyBottom = m.box.y2 + m.box.height * 5.0f
+                            val inY = t.box.y1 < bodyBottom && t.box.y2 > bodyTop
+                            val colLeft = m.box.x1 - m.box.width * 0.45f
+                            val colRight = m.box.x2 + m.box.width * 0.45f
+                            val inX = t.box.centerX in colLeft..colRight || (t.box.x1 < colRight && t.box.x2 > colLeft)
+                            inX && inY
                         }
                     }
                 }
@@ -531,16 +539,24 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 if (femaleFaces.isNotEmpty()) {
                     candidateBoxes.removeAll { c ->
                         femaleFaces.any { f ->
-                            val colLeft = f.box.x1 - f.box.width * 0.55f
-                            val colRight = f.box.x2 + f.box.width * 0.55f
-                            c.centerX in colLeft..colRight || (c.x1 < colRight && c.x2 > colLeft)
+                            val bodyTop = f.box.y1 - 10f
+                            val bodyBottom = f.box.y2 + f.box.height * 5.0f
+                            val inY = c.y1 < bodyBottom && c.y2 > bodyTop
+                            val colLeft = f.box.x1 - f.box.width * 0.45f
+                            val colRight = f.box.x2 + f.box.width * 0.45f
+                            val inX = c.centerX in colLeft..colRight || (c.x1 < colRight && c.x2 > colLeft)
+                            inX && inY
                         }
                     }
                     trackedBoxes.removeAll { t ->
                         femaleFaces.any { f ->
-                            val colLeft = f.box.x1 - f.box.width * 0.55f
-                            val colRight = f.box.x2 + f.box.width * 0.55f
-                            t.box.centerX in colLeft..colRight || (t.box.x1 < colRight && t.box.x2 > colLeft)
+                            val bodyTop = f.box.y1 - 10f
+                            val bodyBottom = f.box.y2 + f.box.height * 5.0f
+                            val inY = t.box.y1 < bodyBottom && t.box.y2 > bodyTop
+                            val colLeft = f.box.x1 - f.box.width * 0.45f
+                            val colRight = f.box.x2 + f.box.width * 0.45f
+                            val inX = t.box.centerX in colLeft..colRight || (t.box.x1 < colRight && t.box.x2 > colLeft)
+                            inX && inY
                         }
                     }
                 }
@@ -667,15 +683,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
         // Phase 3: Expiry
         if (candidateBoxes.isEmpty()) {
-            // No candidates detected in this frame:
-            // Static screens maintain 10s grace period;
-            // Video / motion content maintains 950ms grace period (bridges 2 inference cycles)
-            // so blur NEVER blinks or flickers during video playback!
-            val maxAge = if (isStaticScreen) 10000L else 950L
+            // When no candidates are detected on the current screen (e.g. user scrolled to clean content,
+            // cricket pitch, text, or inanimate objects), expire quickly within 450ms (bridges 1 dropped inference frame)
+            // so ghost boxes vanish immediately!
+            val maxAge = 450L
             trackedBoxes.removeAll { now - it.lastSeenMs > maxAge }
         } else {
-            // Candidates exist: prune unmatched boxes that haven't been seen in 950ms (video) or 10000ms (static)
-            val maxAge = if (isStaticScreen) 10000L else 950L
+            // Candidates exist: prune unmatched boxes that haven't been seen in 950ms (video) or 1500ms (static)
+            val maxAge = if (isStaticScreen) 1500L else 950L
             val matchedBoxes = matchedTrackedIndices.map { trackedBoxes[it] }.toSet()
             trackedBoxes.removeAll { it !in matchedBoxes && (now - it.lastSeenMs > maxAge) }
         }
