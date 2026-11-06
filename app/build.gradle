@@ -3,6 +3,40 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def getGitVersionName = { ->
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'describe', '--tags', '--abbrev=0'
+            standardOutput = stdout
+            errorOutput = new ByteArrayOutputStream()
+            ignoreExitValue = true
+        }
+        def tag = stdout.toString().trim()
+        if (tag != null && !tag.isEmpty()) {
+            return tag.replaceFirst('^[vV]', '')
+        }
+    } catch (Exception ignored) {}
+    return "1.0"
+}
+
+def getGitVersionCode = { String verName ->
+    try {
+        def clean = verName.split('[-+]')[0]
+        def parts = clean.split('\\.')
+        int major = parts.length > 0 ? parts[0].toInteger() : 1
+        int minor = parts.length > 1 ? parts[1].toInteger() : 0
+        int patch = parts.length > 2 ? parts[2].toInteger() : 0
+        int code = major * 10000 + minor * 100 + patch
+        return code > 0 ? code : 1
+    } catch (Exception ignored) {
+        return 1
+    }
+}
+
+def resolvedVersionName = getGitVersionName()
+def resolvedVersionCode = getGitVersionCode(resolvedVersionName)
+
 android {
     namespace 'com.savegaze'
     compileSdk 34
@@ -11,8 +45,8 @@ android {
         applicationId "com.savegaze"
         minSdk 28
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode resolvedVersionCode
+        versionName resolvedVersionName
     }
 
     buildTypes {
@@ -95,4 +129,3 @@ dependencies {
     debugImplementation 'androidx.compose.ui:ui-tooling'
     debugImplementation 'androidx.compose.ui:ui-test-manifest'
 }
-

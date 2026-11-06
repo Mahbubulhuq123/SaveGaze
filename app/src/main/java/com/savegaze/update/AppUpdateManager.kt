@@ -21,11 +21,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -52,6 +50,14 @@ class AppUpdateManager(
         private const val GITHUB_RELEASES_URL = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
         private const val FALLBACK_VERSION_URL = "https://raw.githubusercontent.com/$GITHUB_OWNER/$GITHUB_REPO/main/version.json"
 
+        private const val TRACKER_PREFS = "savegaze_update_install_tracker"
+        private const val KEY_INSTALLED_RELEASE_VERSION = "installed_release_version"
+        private const val KEY_INSTALLED_RELEASE_CODE = "installed_release_code"
+        private const val KEY_PENDING_VERSION_NAME = "pending_version_name"
+        private const val KEY_PENDING_VERSION_CODE = "pending_version_code"
+        private const val KEY_PRE_INSTALL_UPDATE_TIME = "pre_install_update_time"
+        private const val KEY_PENDING_APK_PATH = "pending_apk_path"
+
         @Volatile
         private var instance: AppUpdateManager? = null
 
@@ -62,23 +68,88 @@ class AppUpdateManager(
         }
     }
 
+    private val trackerPrefs = context.getSharedPreferences(TRACKER_PREFS, Context.MODE_PRIVATE)
+
     private val _status = MutableStateFlow<UpdateStatus>(UpdateStatus.Idle)
     val status: StateFlow<UpdateStatus> = _status.asStateFlow()
 
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private var downloadJob: Job? = null
+    private var lastDownloadedInfo: UpdateInfo? = null
+
+    init {
+        syncInstalledReleaseState()
+    }
+
+    /**
+     * Checks if a pending APK update was just installed by Android's PackageInstaller.
+     * When the app restarts after installation, PackageInfo.lastUpdateTime is newer than
+     * the pre-install timestamp, so we promote pending_version_name to installed_release_version!
+     */
+    private fun syncInstalledReleaseState() {
+        try {
+            val pendingVersion = trackerPrefs.getString(KEY_PENDING_VERSION_NAME, null)
+            if (!pendingVersion.isNullOrBlank()) {
+                val preInstallTime = trackerPrefs.getLong(KEY_PRE_INSTALL_UPDATE_TIME, 0L)
+                val currentUpdateTime = getPackageLastUpdateTime()
+
+                if (currentUpdateTime > preInstallTime) {
+                    val pendingCode = trackerPrefs.getInt(KEY_PENDING_VERSION_CODE, 0)
+                    val pendingApkPath = trackerPrefs.getString(KEY_PENDING_APK_PATH, null)
+
+                    trackerPrefs.edit()
+                        .putString(KEY_INSTALLED_RELEASE_VERSION, pendingVersion)
+                        .putInt(KEY_INSTALLED_RELEASE_CODE, pendingCode)
+                        .remove(KEY_PENDING_VERSION_NAME)
+                        .remove(KEY_PENDING_VERSION_CODE)
+                        .remove(KEY_PRE_INSTALL_UPDATE_TIME)
+                        .remove(KEY_PENDING_APK_PATH)
+                        .apply()
+
+                    // Clean up the downloaded APK file after successful installation
+                    if (!pendingApkPath.isNullOrBlank()) {
+                        runCatching { File(pendingApkPath).delete() }
+                    }
+
+                    Log.i(TAG, "Confirmed update installed: v$pendingVersion")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to sync installed release state", e)
+        }
+    }
+
+    private fun getPackageLastUpdateTime(): Long {
+        return try {
+            val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            pInfo.lastUpdateTime
+        } catch (e: Exception) {
+            0L
+        }
+    }
 
     fun getCurrentVersionName(): String {
-        return try {
+        syncInstalledReleaseState()
+        val manifestVersion = try {
             val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
             pInfo.versionName ?: "1.0"
         } catch (e: Exception) {
             "1.0"
         }
+
+        val trackedReleaseVersion = trackerPrefs.getString(KEY_INSTALLED_RELEASE_VERSION, null)
+        return if (!trackedReleaseVersion.isNullOrBlank() &&
+            UpdateInfo.isNewerVersion(remoteVersion = trackedReleaseVersion, currentVersion = manifestVersion)
+        ) {
+            trackedReleaseVersion
+        } else {
+            manifestVersion
+        }
     }
 
     fun getCurrentVersionCode(): Int {
-        return try {
+        syncInstalledReleaseState()
+        val manifestCode = try {
             val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 pInfo.longVersionCode.toInt()
@@ -89,6 +160,8 @@ class AppUpdateManager(
         } catch (e: Exception) {
             1
         }
+        val trackedCode = trackerPrefs.getInt(KEY_INSTALLED_RELEASE_CODE, 0)
+        return maxOf(manifestCode, trackedCode)
     }
 
     fun checkForUpdates(manual: Boolean = false) {
@@ -96,6 +169,7 @@ class AppUpdateManager(
             return
         }
 
+        syncInstalledReleaseState()
         _status.value = UpdateStatus.Checking
 
         scope.launch {
@@ -103,7 +177,6 @@ class AppUpdateManager(
                 if (!manual) {
                     val autoCheck = preferencesManager.getAutoCheckUpdates()
                     if (!autoCheck) {
-                        Log.d(TAG, "Auto check for updates is disabled by user settings")
                         _status.value = UpdateStatus.Idle
                         return@launch
                     }
@@ -126,19 +199,15 @@ class AppUpdateManager(
 
                     if (isNewer) {
                         if (!manual) {
-                            // Check if user chose "Remind Me Later"
                             val remindUntil = preferencesManager.getRemindMeLaterTimestamp()
                             val now = System.currentTimeMillis()
                             if (remindUntil > now) {
-                                Log.d(TAG, "Update v${updateInfo.versionName} postponed until $remindUntil (now=$now)")
                                 _status.value = UpdateStatus.Idle
                                 return@launch
                             }
 
-                            // Check if user previously cancelled with "Don't show this again"
                             val dismissedVersion = preferencesManager.getDismissedUpdateVersion()
                             if (dismissedVersion == updateInfo.versionName) {
-                                Log.d(TAG, "Update v${updateInfo.versionName} was previously dismissed with 'Don't show again'")
                                 _status.value = UpdateStatus.Idle
                                 return@launch
                             }
@@ -165,7 +234,6 @@ class AppUpdateManager(
     }
 
     private fun fetchLatestReleaseInfo(): UpdateInfo? {
-        // 1. Try GitHub Releases API first
         try {
             val conn = openConnectionWithRedirects(
                 GITHUB_RELEASES_URL,
@@ -180,13 +248,11 @@ class AppUpdateManager(
                 if (info != null) return info
             } else {
                 conn.disconnect()
-                Log.w(TAG, "GitHub releases returned HTTP $code")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to fetch from GitHub API, checking fallback version.json", e)
         }
 
-        // 2. Try raw fallback version.json
         try {
             val fallbackConn = openConnectionWithRedirects(FALLBACK_VERSION_URL)
             val code = fallbackConn.responseCode
@@ -219,7 +285,6 @@ class AppUpdateManager(
         var apkSize = 0L
         var assetName = ""
 
-        // Preferred match: user's primary ABI
         for (abi in supportedAbis) {
             for (i in 0 until assets.length()) {
                 val asset = assets.getJSONObject(i)
@@ -234,7 +299,6 @@ class AppUpdateManager(
             if (downloadUrl.isNotEmpty()) break
         }
 
-        // Fallback match: Universal APK or any .apk in release
         if (downloadUrl.isEmpty()) {
             for (i in 0 until assets.length()) {
                 val asset = assets.getJSONObject(i)
@@ -248,10 +312,7 @@ class AppUpdateManager(
             }
         }
 
-        if (downloadUrl.isEmpty()) {
-            Log.w(TAG, "Release found ($versionName) but no matching .apk asset available")
-            return null
-        }
+        if (downloadUrl.isEmpty()) return null
 
         return UpdateInfo(
             versionName = versionName,
@@ -290,6 +351,7 @@ class AppUpdateManager(
     fun startDownload(info: UpdateInfo) {
         if (_status.value is UpdateStatus.Downloading) return
 
+        lastDownloadedInfo = info
         _status.value = UpdateStatus.Downloading(0f, 0L, info.apkSize)
 
         downloadJob?.cancel()
@@ -304,7 +366,6 @@ class AppUpdateManager(
 
             try {
                 if (targetFile.exists() && targetFile.length() > 0L && (info.apkSize <= 0L || targetFile.length() == info.apkSize)) {
-                    // Already downloaded!
                     withContext(Dispatchers.Main) {
                         _status.value = UpdateStatus.DownloadCompleted(targetFile, info)
                         handlePostDownload(targetFile, info)
@@ -353,7 +414,6 @@ class AppUpdateManager(
                     handlePostDownload(targetFile, info)
                 }
             } catch (e: CancellationException) {
-                Log.d(TAG, "Download cancelled by user")
                 if (tempFile.exists()) tempFile.delete()
                 withContext(Dispatchers.Main) {
                     _status.value = UpdateStatus.UpdateAvailable(info)
@@ -405,6 +465,7 @@ class AppUpdateManager(
     }
 
     private fun handlePostDownload(apkFile: File, info: UpdateInfo) {
+        lastDownloadedInfo = info
         if (canInstallUnknownApps()) {
             installApk(apkFile)
         } else {
@@ -437,6 +498,21 @@ class AppUpdateManager(
         }
 
         return try {
+            // Record pending installation version and current package update timestamp
+            // so when the app restarts after installation, we lock in the new version!
+            val inferredVersion = lastDownloadedInfo?.versionName
+                ?: apkFile.nameWithoutExtension.removePrefix("SaveGaze-").trim()
+            val inferredCode = lastDownloadedInfo?.versionCode ?: 0
+
+            if (inferredVersion.isNotBlank()) {
+                trackerPrefs.edit()
+                    .putString(KEY_PENDING_VERSION_NAME, inferredVersion)
+                    .putInt(KEY_PENDING_VERSION_CODE, inferredCode)
+                    .putLong(KEY_PRE_INSTALL_UPDATE_TIME, getPackageLastUpdateTime())
+                    .putString(KEY_PENDING_APK_PATH, apkFile.absolutePath)
+                    .apply()
+            }
+
             val apkUri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
@@ -449,6 +525,7 @@ class AppUpdateManager(
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
+            _status.value = UpdateStatus.Idle
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to launch package installer", e)
