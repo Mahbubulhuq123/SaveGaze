@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Shield Outline and Eye Shape representing SaveGaze Protection -->
+    <path
+        android:fillColor="#6750A4"
+        android:pathData="M54,20 L30,30 L30,55 C30,70 40,83 54,88 C68,83 78,70 78,55 L78,30 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,40 C44,40 36,48 36,54 C36,60 44,68 54,68 C64,68 72,60 72,54 C72,48 64,40 54,40 Z M54,62 C49.58,62 46,58.42 46,54 C46,49.58 49.58,46 54,46 C58.42,46 62,49.58 62,54 C62,58.42 58.42,62 54,62 Z" />
+</vector>
+
