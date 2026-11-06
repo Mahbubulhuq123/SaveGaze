@@ -4,6 +4,10 @@
 *.ap_
 *.aab
 
+# Track official release APKs for every architecture
+!/SaveGaze.apk
+!/release/*.apk
+
 # Files for the ART/Dalvik VM
 *.dex
 

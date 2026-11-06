@@ -90,29 +90,52 @@ SaveGaze/
 
 ---
 
+## 📦 Prebuilt APKs & Architecture Support
+
+SaveGaze is distributed with dedicated builds for every Android architecture as well as a universal bundle:
+
+| Package | Target Architecture | Description |
+|---|---|---|
+| **[`SaveGaze.apk`](SaveGaze.apk)** | **Universal** (All ABIs) | Runs on **every Android phone, tablet, and emulator**. Guaranteed universal compatibility. |
+| **[`SaveGaze-arm64-v8a.apk`](release/SaveGaze-arm64-v8a.apk)** | `arm64-v8a` | **Recommended for modern phones** (Samsung, Pixel, Xiaomi, OnePlus, Motorola, etc.). |
+| **[`SaveGaze-armeabi-v7a.apk`](release/SaveGaze-armeabi-v7a.apk)** | `armeabi-v7a` | For older or budget 32-bit ARM Android devices. |
+| **[`SaveGaze-x86_64.apk`](release/SaveGaze-x86_64.apk)** | `x86_64` | For 64-bit Android Studio emulators and ChromeOS Android subsystem. |
+| **[`SaveGaze-x86.apk`](release/SaveGaze-x86.apk)** | `x86` | For legacy 32-bit x86 emulators. |
+
+---
+
 ## 🚀 How to Build & Install
 
 ### Prerequisites
 1. **JDK 17 or JDK 21** (e.g. Microsoft OpenJDK 21 or Eclipse Temurin).
 2. **Android SDK** with Platform 34 and Build-Tools 34.0.0.
 
-### 1. Build Debug APK
+### 1. Build APKs
 Run the following command from the project root:
 
 ```bash
 ./gradlew :app:assembleDebug
 ```
 
-The compiled APK will be generated at:
+The compiled APKs for all architectures are generated at:
 ```
-app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/debug/
+├── SaveGaze.apk              # Universal build (all architectures)
+├── SaveGaze-arm64-v8a.apk    # 64-bit ARM
+├── SaveGaze-armeabi-v7a.apk  # 32-bit ARM
+├── SaveGaze-x86_64.apk       # 64-bit x86
+└── SaveGaze-x86.apk          # 32-bit x86
 ```
 
 ### 2. Install on Device or Emulator
-Connect your Android 11+ device via USB (or start an AVD emulator) and run:
+Connect your Android 9+ (API 28+) device via USB (or start an AVD emulator) and run:
 
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+# Universal (works on any device)
+adb install -r SaveGaze.apk
+
+# Or install the targeted architecture directly:
+adb install -r release/SaveGaze-arm64-v8a.apk
 ```
 
 ---

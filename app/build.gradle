@@ -51,6 +51,26 @@ android {
     androidResources {
         noCompress += 'onnx'
     }
+
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+            universalApk true
+        }
+    }
+
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            def abi = output.getFilter(com.android.build.OutputFile.ABI)
+            if (abi != null) {
+                outputFileName = "SaveGaze-${abi}.apk"
+            } else {
+                outputFileName = "SaveGaze.apk"
+            }
+        }
+    }
 }
 
 dependencies {
