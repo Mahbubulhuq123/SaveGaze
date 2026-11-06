@@ -30,9 +30,10 @@ import androidx.core.app.NotificationCompat
 import com.savegaze.MainActivity
 import com.savegaze.R
 import com.savegaze.data.PreferencesManager
+import com.savegaze.ml.BoundingBox
 import com.savegaze.ml.Detection
-import com.savegaze.ml.FilteredDetections
 import com.savegaze.ml.GenderFilter
+import com.savegaze.ml.NudeLabel
 import com.savegaze.ml.NudeNetDetector
 import com.savegaze.util.Constants
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +42,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -50,10 +55,18 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "SaveGazeA11yService"
+        private const val OVERLAY_ERROR = "Screen overlay could not be displayed."
 
         @Volatile
         var isRunning: Boolean = false
             private set
+
+        private val _health = MutableStateFlow(ProtectionHealth())
+        val healthFlow: StateFlow<ProtectionHealth> = _health.asStateFlow()
+
+        private fun publishHealth(transform: (ProtectionHealth) -> ProtectionHealth) {
+            _health.update(transform)
+        }
 
         @Volatile
         private var mediaProjectionData: Intent? = null
@@ -82,7 +95,6 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private var scanJob: Job? = null
     private val scanning = AtomicBoolean(false)
 
-    // MediaProjection resources for Android 10 (API 29)
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -95,30 +107,42 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private var currentScanInterval: Long = Constants.DEFAULT_SCAN_INTERVAL_MS
     private var currentSensitivity: Float = 0.25f
     private var lastBlurTime = 0L
-    private var activeBlurBoxes: List<com.savegaze.ml.BoundingBox> = emptyList()
-    private var activeFaceBoxes: List<com.savegaze.ml.BoundingBox> = emptyList()
+    private var activeBlurBoxes: List<BoundingBox> = emptyList()
+    private var activeFaceBoxes: List<BoundingBox> = emptyList()
     private var lastScreenSignature: IntArray? = null
     private var lastGenderFilter: GenderFilter? = null
     private var userJustScrolled = false
+    private var lastScrollTimestamp = 0L
     private var lastScreenIsStatic = false
+    private var notificationShown = false
 
     private data class TrackedBox(
-        var box: com.savegaze.ml.BoundingBox,
+        var box: BoundingBox,
         var lastSeenMs: Long = 0L,
-        var associatedFace: com.savegaze.ml.BoundingBox? = null,
-        var faceGender: com.savegaze.ml.NudeLabel? = null
+        var associatedFace: BoundingBox? = null,
+        var faceGender: NudeLabel? = null
     )
     private val trackedBoxes = mutableListOf<TrackedBox>()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.w(TAG, "SaveGaze Accessibility Service connected")
-
         isRunning = true
+        publishHealth { ProtectionHealth(serviceRunning = true) }
 
         preferencesManager = PreferencesManager(this)
-        overlayManager = OverlayManager(this)
-        overlayManager?.showOverlay()
+        overlayManager = OverlayManager(this).also { manager ->
+            manager.setOnVisibilityChangedListener { visible ->
+                publishHealth { health ->
+                    health.copy(
+                        overlayActive = visible,
+                        lastError = if (visible && health.lastError == OVERLAY_ERROR) null
+                        else if (visible) health.lastError
+                        else OVERLAY_ERROR
+                    )
+                }
+            }
+            manager.showOverlay()
+        }
 
         serviceScope.launch {
             preferencesManager?.scanIntervalFlow?.collect { interval ->
@@ -149,9 +173,22 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
         }
         serviceScope.launch {
+            preferencesManager?.isEnabledFlow?.collect { enabled ->
+                if (!enabled) {
+                    trackedBoxes.clear()
+                    activeBlurBoxes = emptyList()
+                    activeFaceBoxes = emptyList()
+                    lastScreenSignature = null
+                    overlayManager?.clearBlurRegions()
+                } else if (detector != null) {
+                    performScan()
+                }
+                updateNotification(paused = !enabled)
+            }
+        }
+        serviceScope.launch {
             preferencesManager?.genderFilterFlow?.collect { filter ->
                 if (filter != lastGenderFilter) {
-                    Log.w(TAG, "Gender filter flow changed from $lastGenderFilter to $filter - clearing blur")
                     lastGenderFilter = filter
                     trackedBoxes.clear()
                     activeBlurBoxes = emptyList()
@@ -174,14 +211,21 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 detector = withContext(Dispatchers.IO) {
                     NudeNetDetector(this@SaveGazeAccessibilityService)
                 }
-                Log.w(TAG, "NudeNetDetector loaded successfully")
+                publishHealth { it.copy(detectorStatus = DetectorStatus.READY) }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load NudeNetDetector", e)
+                publishHealth {
+                    it.copy(
+                        detectorStatus = DetectorStatus.FAILED,
+                        lastError = "AI detector failed to load: ${e.message ?: "unknown error"}"
+                    )
+                }
                 return@launch
             }
 
             createNotificationChannel()
-            showPersistentNotification()
+            val protectionEnabled = preferencesManager?.getIsEnabled() ?: true
+            showPersistentNotification(paused = !protectionEnabled)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 startScanningLoop()
@@ -199,25 +243,24 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                // Switching windows/apps: clear active blur and tracking from previous app immediately
+                val pkg = event.packageName?.toString() ?: ""
+                if (pkg == "com.android.systemui") return
                 trackedBoxes.clear()
                 activeBlurBoxes = emptyList()
                 activeFaceBoxes = emptyList()
                 lastScreenSignature = null
                 overlayManager?.clearBlurRegions()
                 serviceScope.launch {
-                    val enabled = preferencesManager?.getIsEnabled() ?: true
-                    if (enabled) {
+                    if (preferencesManager?.getIsEnabled() == true) {
                         performScan()
                     }
                 }
             }
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
-                // User scrolled: mark scroll active and trigger scan without clearing trackedBoxes (prevents blinking)
                 userJustScrolled = true
+                lastScrollTimestamp = System.currentTimeMillis()
                 serviceScope.launch {
-                    val enabled = preferencesManager?.getIsEnabled() ?: true
-                    if (enabled) {
+                    if (preferencesManager?.getIsEnabled() == true) {
                         performScan()
                     }
                 }
@@ -226,13 +269,11 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        Log.w(TAG, "Service interrupted")
         cleanup()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.i(TAG, "Service destroyed")
         cleanup()
     }
 
@@ -250,15 +291,13 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
                     val baseInterval = preferencesManager?.getScanInterval()
                         ?: Constants.DEFAULT_SCAN_INTERVAL_MS
-                    // In videos with active moving blur, scan at 200ms for fluid body tracking
                     val interval = if (activeBlurBoxes.isNotEmpty() && !lastScreenIsStatic) {
-                        minOf(baseInterval, 200L)
+                        minOf(baseInterval, 160L)
                     } else {
-                        baseInterval
+                        minOf(baseInterval, 300L)
                     }
                     delay(interval)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error in scanning loop", e)
                     delay(Constants.DEFAULT_SCAN_INTERVAL_MS)
                 }
             }
@@ -307,13 +346,11 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
 
                     override fun onFailure(errorCode: Int) {
-                        Log.e(TAG, "Screenshot failed: $errorCode")
                         scanning.set(false)
                     }
                 }
             )
         } catch (e: Exception) {
-            Log.e(TAG, "takeScreenshot threw", e)
             scanning.set(false)
         }
     }
@@ -321,22 +358,17 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     @Synchronized
     private fun setupMediaProjection() {
         if (mediaProjection != null && virtualDisplay != null) return
-
-        val data = mediaProjectionData ?: run {
-            Log.w(TAG, "Cannot setup MediaProjection: mediaProjectionData is null.")
-            return
-        }
+        val data = mediaProjectionData ?: return
         val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager ?: return
         try {
             mediaProjection = mpManager.getMediaProjection(mediaProjectionResultCode, data)
-            Log.w(TAG, "MediaProjection acquired successfully: $mediaProjection")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to getMediaProjection", e)
             return
         }
 
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
         wm.defaultDisplay.getRealMetrics(metrics)
         screenWidth = metrics.widthPixels
         screenHeight = metrics.heightPixels
@@ -360,14 +392,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             screenDensity,
             flags,
             imageReader?.surface,
-            object : VirtualDisplay.Callback() {
-                override fun onPaused() { Log.w(TAG, "VirtualDisplay Callback: PAUSED") }
-                override fun onResumed() { Log.w(TAG, "VirtualDisplay Callback: RESUMED") }
-                override fun onStopped() { Log.w(TAG, "VirtualDisplay Callback: STOPPED") }
-            },
+            null,
             backgroundHandler
         )
-        Log.w(TAG, "VirtualDisplay created with FrameListener: $screenWidth x $screenHeight @ $screenDensity dpi")
     }
 
     private fun handleCapturedFrame(reader: ImageReader) {
@@ -378,13 +405,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         } ?: return
 
         val now = System.currentTimeMillis()
-        if (now - lastFrameTime < currentScanInterval || !scanning.compareAndSet(false, true)) {
+        if (now - lastFrameTime < 150L || !scanning.compareAndSet(false, true)) {
             image.close()
             return
         }
 
         lastFrameTime = now
-        Log.w(TAG, "Frame captured: ${image.width}x${image.height}")
         processImage(image)
     }
 
@@ -395,7 +421,6 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             val pixelStride = planes[0].pixelStride
             val rowStride = planes[0].rowStride
             val rowPadding = rowStride - pixelStride * screenWidth
-            Log.w(TAG, "Planes: pixelStride=$pixelStride, rowStride=$rowStride, rowPadding=$rowPadding, w=$screenWidth, h=$screenHeight")
             val bitmap = Bitmap.createBitmap(
                 screenWidth + rowPadding / pixelStride,
                 screenHeight,
@@ -410,10 +435,6 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 }
             } else bitmap
 
-            // Sample 1 pixel to verify not all black
-            val samplePixel = cleanBitmap.getPixel(screenWidth / 2, screenHeight / 2)
-            Log.w(TAG, "Sample center pixel: 0x${Integer.toHexString(samplePixel)}")
-
             serviceScope.launch(Dispatchers.Default) {
                 try {
                     processBitmap(cleanBitmap)
@@ -422,7 +443,6 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Frame processing error", e)
             image.close()
             scanning.set(false)
         }
@@ -435,20 +455,22 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         }
 
         try {
-            val startTime = System.currentTimeMillis()
+            if (preferencesManager?.getIsEnabled() == false) {
+                overlayManager?.clearBlurRegions()
+                return
+            }
+
             val sensitivity = preferencesManager?.getSensitivity() ?: 0.25f
             currentDetector.confidenceThreshold = sensitivity
 
             val detections: List<Detection> = withContext(Dispatchers.Default) {
                 currentDetector.detect(bitmap)
             }
-            val elapsed = System.currentTimeMillis() - startTime
 
             val genderFilter: GenderFilter =
                 preferencesManager?.getGenderFilter() ?: GenderFilter.BOTH
 
             if (lastGenderFilter != null && lastGenderFilter != genderFilter) {
-                Log.w(TAG, "Gender filter changed from $lastGenderFilter to $genderFilter - clearing blur")
                 trackedBoxes.clear()
                 activeBlurBoxes = emptyList()
                 activeFaceBoxes = emptyList()
@@ -459,35 +481,32 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             val shouldBlurFullBody = preferencesManager?.getBlurFullBody() ?: false
             val filtered = currentDetector.filterDetections(detections, genderFilter, shouldBlurFullBody)
 
-            Log.w(TAG, "Inference in ${elapsed}ms. Detections (${detections.size}): ${detections.map { "${it.label.name}(${"%.2f".format(it.confidence)})" }}, toBlur: ${filtered.toBlur.size}, facesPreserved: ${filtered.faces.size}")
-
-            // Compute screen signature EXCLUDING blur overlay regions so signature
-            // captures the real underlying content, not the blur rectangles we painted.
-            val currentSignature = computeScreenSignature(bitmap, activeBlurBoxes)
+            // Exclude both current and tracked blur boxes when computing the unblurred screen signature
+            val allExcluded = activeBlurBoxes + trackedBoxes.map { it.box }
+            val currentSignature = computeScreenSignature(bitmap, allExcluded)
             val screenChange = analyzeScreenChange(lastScreenSignature, currentSignature)
             val isSceneCut = screenChange.isSceneCut
             lastScreenIsStatic = screenChange.isStatic
             val shouldBlurFaces = preferencesManager?.getBlurFaces() ?: false
 
-            val candidateBoxes = mutableListOf<com.savegaze.ml.BoundingBox>()
+            val candidateBoxes = mutableListOf<BoundingBox>()
             if (filtered.mergedBlurBoxes.isNotEmpty()) {
                 candidateBoxes.addAll(filtered.mergedBlurBoxes)
             } else {
                 candidateBoxes.addAll(filtered.toBlur.map { it.box })
             }
 
-            // If Face Blurring is enabled by the user, add face boxes to candidate blur regions
-            // STRICTLY respecting the active GenderFilter:
-            if (shouldBlurFaces && filtered.faces.isNotEmpty()) {
-                val facesToBlur = when (genderFilter) {
-                    GenderFilter.BOTH -> filtered.faces
-                    GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == com.savegaze.ml.NudeLabel.FACE_FEMALE }
-                    GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == com.savegaze.ml.NudeLabel.FACE_MALE }
-                }
-                for (face in facesToBlur) {
+            val matchingGenderFaces = when (genderFilter) {
+                GenderFilter.BOTH -> filtered.faces
+                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE }
+                GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_MALE }
+            }
+
+            if (shouldBlurFaces && matchingGenderFaces.isNotEmpty()) {
+                for (face in matchingGenderFaces) {
                     val fw = face.box.width
                     val fh = face.box.height
-                    candidateBoxes.add(com.savegaze.ml.BoundingBox(
+                    candidateBoxes.add(BoundingBox(
                         x1 = (face.box.x1 - fw * 0.15f).coerceAtLeast(0f),
                         y1 = (face.box.y1 - fh * 0.20f).coerceAtLeast(0f),
                         x2 = face.box.x2 + fw * 0.15f,
@@ -496,91 +515,59 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 }
             }
 
-            // Faces that must be protected via hardware clipping (never drawn over by any blur box):
             val facesToProtect = if (shouldBlurFaces) {
                 when (genderFilter) {
                     GenderFilter.BOTH -> emptyList()
-                    GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == com.savegaze.ml.NudeLabel.FACE_MALE }.map { it.box }
-                    GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == com.savegaze.ml.NudeLabel.FACE_FEMALE }.map { it.box }
+                    GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_MALE }.map { it.box }
+                    GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE }.map { it.box }
                 }
             } else {
                 filtered.faces.map { it.box }
             }
 
-            // In FEMALE_ONLY mode: purge any candidate or tracked boxes touching male body bounds
-            if (genderFilter == GenderFilter.FEMALE_ONLY) {
-                val maleFaces = filtered.faces.filter { it.label == com.savegaze.ml.NudeLabel.FACE_MALE }
-                if (maleFaces.isNotEmpty()) {
-                    candidateBoxes.removeAll { c ->
-                        maleFaces.any { m ->
-                            val bodyTop = m.box.y1 - 10f
-                            val bodyBottom = m.box.y2 + m.box.height * 5.0f
-                            val inY = c.y1 < bodyBottom && c.y2 > bodyTop
-                            val colLeft = m.box.x1 - m.box.width * 0.45f
-                            val colRight = m.box.x2 + m.box.width * 0.45f
-                            val inX = c.centerX in colLeft..colRight || (c.x1 < colRight && c.x2 > colLeft)
-                            inX && inY
-                        }
-                    }
-                    trackedBoxes.removeAll { t ->
-                        maleFaces.any { m ->
-                            val bodyTop = m.box.y1 - 10f
-                            val bodyBottom = m.box.y2 + m.box.height * 5.0f
-                            val inY = t.box.y1 < bodyBottom && t.box.y2 > bodyTop
-                            val colLeft = m.box.x1 - m.box.width * 0.45f
-                            val colRight = m.box.x2 + m.box.width * 0.45f
-                            val inX = t.box.centerX in colLeft..colRight || (t.box.x1 < colRight && t.box.x2 > colLeft)
-                            inX && inY
-                        }
-                    }
-                }
-            } else if (genderFilter == GenderFilter.MALE_ONLY) {
-                val femaleFaces = filtered.faces.filter { it.label == com.savegaze.ml.NudeLabel.FACE_FEMALE }
-                if (femaleFaces.isNotEmpty()) {
-                    candidateBoxes.removeAll { c ->
-                        femaleFaces.any { f ->
-                            val bodyTop = f.box.y1 - 10f
-                            val bodyBottom = f.box.y2 + f.box.height * 5.0f
-                            val inY = c.y1 < bodyBottom && c.y2 > bodyTop
-                            val colLeft = f.box.x1 - f.box.width * 0.45f
-                            val colRight = f.box.x2 + f.box.width * 0.45f
-                            val inX = c.centerX in colLeft..colRight || (c.x1 < colRight && c.x2 > colLeft)
-                            inX && inY
-                        }
-                    }
-                    trackedBoxes.removeAll { t ->
-                        femaleFaces.any { f ->
-                            val bodyTop = f.box.y1 - 10f
-                            val bodyBottom = f.box.y2 + f.box.height * 5.0f
-                            val inY = t.box.y1 < bodyBottom && t.box.y2 > bodyTop
-                            val colLeft = f.box.x1 - f.box.width * 0.45f
-                            val colRight = f.box.x2 + f.box.width * 0.45f
-                            val inX = t.box.centerX in colLeft..colRight || (t.box.x1 < colRight && t.box.x2 > colLeft)
-                            inX && inY
-                        }
-                    }
-                }
+            val now = System.currentTimeMillis()
+            val didScrollRecently = userJustScrolled && (now - lastScrollTimestamp < 450L)
+            if (userJustScrolled && !didScrollRecently) {
+                userJustScrolled = false
             }
 
-            val now = System.currentTimeMillis()
+            val boxesToApply = updateTrackedBoxes(
+                candidateBoxes = candidateBoxes,
+                matchingFaces = matchingGenderFaces,
+                now = now,
+                isStaticScreen = lastScreenIsStatic,
+                isSceneCut = isSceneCut,
+                didScroll = userJustScrolled
+            )
 
-            // Deadband-stabilized box update: until the body actually moves beyond spatial threshold,
-            // the blur box strictly does not change position at all.
-            val boxesToApply = updateTrackedBoxes(candidateBoxes, now, lastScreenIsStatic, isSceneCut, userJustScrolled)
-
-            if (boxesToApply.isNotEmpty()) {
+            val protectionEnabled = preferencesManager?.getIsEnabled() ?: true
+            if (!protectionEnabled) {
+                trackedBoxes.clear()
+                activeBlurBoxes = emptyList()
+                activeFaceBoxes = emptyList()
+                lastScreenSignature = currentSignature
+                overlayManager?.clearBlurRegions()
+            } else if (boxesToApply.isNotEmpty()) {
                 activeBlurBoxes = boxesToApply
                 activeFaceBoxes = facesToProtect
-                lastScreenSignature = currentSignature
+                // Only update baseline signature when unblurred points exist
+                if (currentSignature.count { it != -1 } >= 8) {
+                    lastScreenSignature = currentSignature
+                }
                 lastBlurTime = now
-                Log.w(TAG, "Active blur on ${boxesToApply.size} stabilized boxes (detections: ${filtered.toBlur.size}, protectedFaces: ${facesToProtect.size}, blurFaces: $shouldBlurFaces, genderFilter: $genderFilter).")
                 overlayManager?.updateBlurRegions(boxesToApply, facesToProtect)
             } else {
                 activeBlurBoxes = emptyList()
                 activeFaceBoxes = emptyList()
                 lastScreenSignature = currentSignature
                 overlayManager?.clearBlurRegions()
-                Log.w(TAG, "Screen changed or grace period timed out: cleared blur regions.")
+            }
+
+            publishHealth {
+                it.copy(
+                    lastFrameAtMillis = System.currentTimeMillis(),
+                    lastError = if (it.overlayActive) null else it.lastError
+                )
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error in processBitmap", e)
@@ -590,31 +577,30 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     }
 
     private fun updateTrackedBoxes(
-        candidateBoxes: List<com.savegaze.ml.BoundingBox>,
+        candidateBoxes: List<BoundingBox>,
+        matchingFaces: List<Detection>,
         now: Long,
         isStaticScreen: Boolean,
         isSceneCut: Boolean,
         didScroll: Boolean
-    ): List<com.savegaze.ml.BoundingBox> {
-        // When user physically scrolled, immediately clear if no new detections on the scrolled screen
+    ): List<BoundingBox> {
         if (didScroll) {
-            trackedBoxes.clear()
             userJustScrolled = false
-            if (candidateBoxes.isEmpty()) {
+            if (isSceneCut && candidateBoxes.isEmpty()) {
+                trackedBoxes.clear()
                 return emptyList()
             }
         }
 
-        // Hard scene cut to a new scene (e.g. video switch or new page):
-        // If the new scene has no candidates, clear immediately so blur never lingers on non-NSFW content!
-        if (isSceneCut && candidateBoxes.isEmpty()) {
+        // Only clear on a true scene cut when no matching person face AND no candidate boxes remain
+        if (isSceneCut && candidateBoxes.isEmpty() && matchingFaces.isEmpty()) {
             trackedBoxes.clear()
             return emptyList()
         }
 
-        // Phase 2: Match candidates to tracked boxes
         val matchedTrackedIndices = mutableSetOf<Int>()
 
+        // 1. Match new candidate boxes to existing tracked boxes
         for (cand in candidateBoxes) {
             var bestIdx = -1
             var bestScore = 0f
@@ -623,78 +609,103 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 if (i in matchedTrackedIndices) continue
                 val tracked = trackedBoxes[i]
                 val iou = cand.iou(tracked.box)
-                if (iou > 0.15f && iou > bestScore) {
+                if (iou > 0.08f && iou > bestScore) {
                     bestScore = iou
                     bestIdx = i
                 } else if (bestScore == 0f) {
                     val cxDist = kotlin.math.abs(cand.centerX - tracked.box.centerX)
                     val cyDist = kotlin.math.abs(cand.centerY - tracked.box.centerY)
-                    if (cxDist < maxOf(cand.width, tracked.box.width) * 0.45f &&
-                        cyDist < maxOf(cand.height, tracked.box.height) * 0.45f) {
+                    if (cxDist < maxOf(cand.width, tracked.box.width) * 0.65f &&
+                        cyDist < maxOf(cand.height, tracked.box.height) * 0.65f) {
                         bestIdx = i
                     }
                 }
             }
 
+            val nearFace = matchingFaces.firstOrNull { f ->
+                kotlin.math.abs(f.box.centerX - cand.centerX) < maxOf(cand.width, f.box.width * 2f) &&
+                f.box.y2 <= cand.y2 + 60f
+            }?.box
+
             if (bestIdx >= 0) {
                 matchedTrackedIndices.add(bestIdx)
                 val tracked = trackedBoxes[bestIdx]
                 tracked.lastSeenMs = now
+                if (nearFace != null) tracked.associatedFace = nearFace
 
-                // Static screen (images, paused video):
-                // If the candidate box expanded (e.g. side-profile breast or intimate contour newly detected),
-                // smoothly expand the tracked box to cover it completely!
                 if (isStaticScreen) {
-                    if (cand.x1 < tracked.box.x1 - 4f || cand.x2 > tracked.box.x2 + 4f ||
-                        cand.y1 < tracked.box.y1 - 4f || cand.y2 > tracked.box.y2 + 4f) {
-                        tracked.box = com.savegaze.ml.BoundingBox(
-                            minOf(tracked.box.x1, cand.x1),
-                            minOf(tracked.box.y1, cand.y1),
-                            maxOf(tracked.box.x2, cand.x2),
-                            maxOf(tracked.box.y2, cand.y2)
-                        )
-                    }
-                    continue
-                }
-
-                // Video screen: check deadband before updating position
-                val cxDist = kotlin.math.abs(cand.centerX - tracked.box.centerX)
-                val cyDist = kotlin.math.abs(cand.centerY - tracked.box.centerY)
-                val wDiff = kotlin.math.abs(cand.width - tracked.box.width)
-                val hDiff = kotlin.math.abs(cand.height - tracked.box.height)
-
-                val deadbandX = maxOf(tracked.box.width * 0.08f, 10f)
-                val deadbandY = maxOf(tracked.box.height * 0.08f, 10f)
-
-                val bodyMoved = cxDist > deadbandX || cyDist > deadbandY || wDiff > 16f || hDiff > 16f
-                if (bodyMoved) {
-                    // Smooth tracking in video: lerp toward new position
-                    val alpha = 0.50f
-                    val newX1 = tracked.box.x1 * (1f - alpha) + cand.x1 * alpha
-                    val newY1 = tracked.box.y1 * (1f - alpha) + cand.y1 * alpha
-                    val newX2 = tracked.box.x2 * (1f - alpha) + cand.x2 * alpha
-                    val newY2 = tracked.box.y2 * (1f - alpha) + cand.y2 * alpha
-                    tracked.box = com.savegaze.ml.BoundingBox(newX1, newY1, newX2, newY2)
+                    // On static screens, only union/expand so coverage never shrinks or jitters
+                    tracked.box = BoundingBox(
+                        minOf(tracked.box.x1, cand.x1),
+                        minOf(tracked.box.y1, cand.y1),
+                        maxOf(tracked.box.x2, cand.x2),
+                        maxOf(tracked.box.y2, cand.y2)
+                    )
+                } else {
+                    // In videos: expand fast (0.85f) to cover newly exposed body parts immediately,
+                    // but shrink very slowly (0.12f) so self-occluded body parts stay covered!
+                    val newX1 = if (cand.x1 < tracked.box.x1) tracked.box.x1 * 0.15f + cand.x1 * 0.85f else tracked.box.x1 * 0.88f + cand.x1 * 0.12f
+                    val newY1 = if (cand.y1 < tracked.box.y1) tracked.box.y1 * 0.15f + cand.y1 * 0.85f else tracked.box.y1 * 0.88f + cand.y1 * 0.12f
+                    val newX2 = if (cand.x2 > tracked.box.x2) tracked.box.x2 * 0.15f + cand.x2 * 0.85f else tracked.box.x2 * 0.88f + cand.x2 * 0.12f
+                    val newY2 = if (cand.y2 > tracked.box.y2) tracked.box.y2 * 0.15f + cand.y2 * 0.85f else tracked.box.y2 * 0.88f + cand.y2 * 0.12f
+                    tracked.box = BoundingBox(newX1, newY1, newX2, newY2)
                 }
             } else {
-                trackedBoxes.add(TrackedBox(box = cand, lastSeenMs = now))
+                trackedBoxes.add(
+                    TrackedBox(
+                        box = cand,
+                        lastSeenMs = now,
+                        associatedFace = nearFace
+                    )
+                )
+                matchedTrackedIndices.add(trackedBoxes.lastIndex)
             }
         }
 
-        // Phase 3: Expiry
-        if (candidateBoxes.isEmpty()) {
-            // When no candidates are detected on the current screen (e.g. user scrolled to clean content,
-            // cricket pitch, text, or inanimate objects), expire quickly within 450ms (bridges 1 dropped inference frame)
-            // so ghost boxes vanish immediately!
-            val maxAge = 450L
-            trackedBoxes.removeAll { now - it.lastSeenMs > maxAge }
-        } else {
-            // Candidates exist: prune unmatched boxes that haven't been seen in 950ms (video) or 1500ms (static)
-            val maxAge = if (isStaticScreen) 1500L else 950L
-            val matchedBoxes = matchedTrackedIndices.map { trackedBoxes[it] }.toSet()
-            trackedBoxes.removeAll { it !in matchedBoxes && (now - it.lastSeenMs > maxAge) }
+        // 2. Self-Occlusion Protection:
+        // For any tracked box that wasn't directly matched (because our opaque blur shield is covering the body!),
+        // check if:
+        // (a) The screen is static -> keep locked indefinitely (refresh lastSeenMs = now)
+        // (b) In video -> if a matching-gender face is still right above/near the shield, anchor the shield to that face and refresh lastSeenMs = now!
+        for (i in trackedBoxes.indices) {
+            if (i in matchedTrackedIndices) continue
+            val tracked = trackedBoxes[i]
+
+            if (isStaticScreen && !didScroll && !isSceneCut) {
+                // Static image/paused video: the blur shield itself is occluding the underlying image.
+                // Never expire while the surrounding screen is static!
+                tracked.lastSeenMs = now
+                continue
+            }
+
+            // Video face-anchor tracking:
+            val anchorFace = matchingFaces.firstOrNull { f ->
+                val horizDist = kotlin.math.abs(f.box.centerX - tracked.box.centerX)
+                val vertDist = kotlin.math.abs(f.box.y2 - tracked.box.y1)
+                horizDist < maxOf(tracked.box.width * 0.85f, f.box.width * 2.2f) &&
+                vertDist < maxOf(tracked.box.height * 0.65f, f.box.height * 2.5f)
+            }?.box
+
+            if (anchorFace != null) {
+                val prevFace = tracked.associatedFace
+                if (prevFace != null) {
+                    val dx = (anchorFace.centerX - prevFace.centerX) * 0.65f
+                    val dy = (anchorFace.y2 - prevFace.y2) * 0.65f
+                    tracked.box = BoundingBox(
+                        x1 = (tracked.box.x1 + dx).coerceAtLeast(0f),
+                        y1 = (tracked.box.y1 + dy).coerceAtLeast(0f),
+                        x2 = tracked.box.x2 + dx,
+                        y2 = tracked.box.y2 + dy
+                    )
+                }
+                tracked.associatedFace = anchorFace
+                tracked.lastSeenMs = now
+            }
         }
 
+        // 3. Prune expired tracks only when screen is actually changing and hold time elapsed
+        val holdTimeMs = if (didScroll) 650L else 2200L
+        trackedBoxes.removeAll { now - it.lastSeenMs > holdTimeMs }
         return trackedBoxes.map { it.box }
     }
 
@@ -705,7 +716,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
     private fun computeScreenSignature(
         bitmap: Bitmap,
-        excludeBoxes: List<com.savegaze.ml.BoundingBox> = emptyList()
+        excludeBoxes: List<BoundingBox> = emptyList()
     ): IntArray {
         val sig = IntArray(100)
         val w = bitmap.width
@@ -770,7 +781,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         manager.createNotificationChannel(channel)
     }
 
-    private fun showPersistentNotification() {
+    private fun showPersistentNotification(paused: Boolean = false) {
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -785,7 +796,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         val notification = NotificationCompat.Builder(this, Constants.NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.service_running))
+            .setContentText(
+                getString(if (paused) R.string.service_paused else R.string.service_running)
+            )
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -814,6 +827,13 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 manager.notify(Constants.NOTIFICATION_ID, notification)
             }
         }
+        notificationShown = true
+    }
+
+    private fun updateNotification(paused: Boolean) {
+        if (notificationShown) {
+            showPersistentNotification(paused = paused)
+        }
     }
 
     private fun cleanup() {
@@ -824,6 +844,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         activeBlurBoxes = emptyList()
         activeFaceBoxes = emptyList()
         lastScreenSignature = null
+        notificationShown = false
 
         virtualDisplay?.release()
         virtualDisplay = null
@@ -836,6 +857,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         handlerThread = null
         backgroundHandler = null
 
+        overlayManager?.setOnVisibilityChangedListener(null)
         overlayManager?.destroy()
         overlayManager = null
 
@@ -847,5 +869,6 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         detector = null
 
         serviceScope.cancel()
+        publishHealth { ProtectionHealth() }
     }
 }

@@ -6,9 +6,13 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,20 +20,29 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Slider
@@ -37,39 +50,92 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.savegaze.data.BlurStyle
 import com.savegaze.data.PreferencesManager
 import com.savegaze.ml.GenderFilter
+import com.savegaze.update.AppUpdateManager
+import com.savegaze.update.UpdateStatus
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+/** Anchor targets used by Home shortcuts to deep-link into the single settings surface. */
+enum class SettingsSection(val title: String) {
+    GENDER("Gender Filter"),
+    FACE("Face Blurring"),
+    FULL_BODY("Full Body Blurring"),
+    SENSITIVITY("Detection Sensitivity"),
+    INTENSITY("Blur Intensity"),
+    STYLE("Blur Style & Variation"),
+    OPACITY("Blur Opacity / Transparency"),
+    UPDATES("App Updates")
+}
 
 @Composable
 fun SettingsScreen(
     preferencesManager: PreferencesManager,
+    updateManager: AppUpdateManager,
+    sectionToReveal: SettingsSection? = null,
+    onSectionRevealed: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+    val sectionOffsets = remember { mutableStateMapOf<SettingsSection, Int>() }
+    val revealPaddingPx = with(LocalDensity.current) { 12.dp.roundToPx() }
+    val targetOffset = sectionToReveal?.let { sectionOffsets[it] }
+
+    val updateStatus by updateManager.status.collectAsState()
+
+    LaunchedEffect(updateStatus) {
+        if (updateStatus is UpdateStatus.UpToDate) {
+            val ver = updateManager.getCurrentVersionName()
+            android.widget.Toast.makeText(context, "SaveGaze is up to date (v$ver)", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(sectionToReveal, targetOffset) {
+        val section = sectionToReveal ?: return@LaunchedEffect
+        val offset = sectionOffsets[section] ?: return@LaunchedEffect
+        scrollState.animateScrollTo((offset - revealPaddingPx).coerceAtLeast(0))
+        onSectionRevealed()
+    }
 
     val selectedGender by preferencesManager.genderFilterFlow.collectAsState(initial = GenderFilter.BOTH)
-    var sensitivity by remember { mutableFloatStateOf(0.25f) }
-    var blurIntensity by remember { mutableIntStateOf(20) }
+    val autoCheckUpdates by preferencesManager.autoCheckUpdatesFlow.collectAsState(initial = true)
+    val remindTimestamp by preferencesManager.remindMeLaterTimestampFlow.collectAsState(initial = 0L)
+    val dismissedVersion by preferencesManager.dismissedUpdateVersionFlow.collectAsState(initial = null)
+    val sensitivityPreference by preferencesManager.sensitivityFlow.collectAsState(initial = 0.25f)
+    var sensitivity by remember { mutableFloatStateOf(sensitivityPreference) }
+    val blurIntensityPreference by preferencesManager.blurIntensityFlow.collectAsState(initial = 25)
+    var blurIntensity by remember { mutableIntStateOf(blurIntensityPreference) }
     val blurStyle by preferencesManager.blurStyleFlow.collectAsState(initial = BlurStyle.SOLID_BLACK)
     val blurOpacity by preferencesManager.blurOpacityFlow.collectAsState(initial = 100)
-    var sliderOpacity by remember { mutableFloatStateOf(100f) }
+    var sliderOpacity by remember { mutableFloatStateOf(blurOpacity.toFloat()) }
     val blurFaces by preferencesManager.blurFacesFlow.collectAsState(initial = false)
     val blurFullBody by preferencesManager.blurFullBodyFlow.collectAsState(initial = false)
     var howItWorksExpanded by remember { mutableStateOf(false) }
@@ -78,15 +144,18 @@ fun SettingsScreen(
         sliderOpacity = blurOpacity.toFloat()
     }
 
-    LaunchedEffect(Unit) {
-        sensitivity = preferencesManager.getSensitivity()
-        blurIntensity = preferencesManager.getBlurIntensity()
+    LaunchedEffect(sensitivityPreference) {
+        sensitivity = sensitivityPreference
+    }
+
+    LaunchedEffect(blurIntensityPreference) {
+        blurIntensity = blurIntensityPreference
     }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = 20.dp, vertical = 16.dp)
     ) {
         Text(
@@ -100,7 +169,9 @@ fun SettingsScreen(
 
         // Gender Filter Section
         ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .registerSettingsSection(SettingsSection.GENDER, sectionOffsets),
             shape = RoundedCornerShape(16.dp),
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
         ) {
@@ -159,13 +230,24 @@ fun SettingsScreen(
 
         // Face Blurring Section
         ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .registerSettingsSection(SettingsSection.FACE, sectionOffsets),
             shape = RoundedCornerShape(16.dp),
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .toggleable(
+                        value = blurFaces,
+                        onValueChange = { checked ->
+                            coroutineScope.launch {
+                                preferencesManager.setBlurFaces(checked)
+                            }
+                        },
+                        role = Role.Switch
+                    )
                     .padding(20.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -190,11 +272,7 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.width(16.dp))
                 Switch(
                     checked = blurFaces,
-                    onCheckedChange = { checked ->
-                        coroutineScope.launch {
-                            preferencesManager.setBlurFaces(checked)
-                        }
-                    }
+                    onCheckedChange = null
                 )
             }
         }
@@ -203,13 +281,24 @@ fun SettingsScreen(
 
         // Full Body Blurring Toggle Section
         ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .registerSettingsSection(SettingsSection.FULL_BODY, sectionOffsets),
             shape = RoundedCornerShape(16.dp),
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .toggleable(
+                        value = blurFullBody,
+                        onValueChange = { checked ->
+                            coroutineScope.launch {
+                                preferencesManager.setBlurFullBody(checked)
+                            }
+                        },
+                        role = Role.Switch
+                    )
                     .padding(20.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -234,11 +323,7 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.width(16.dp))
                 Switch(
                     checked = blurFullBody,
-                    onCheckedChange = { checked ->
-                        coroutineScope.launch {
-                            preferencesManager.setBlurFullBody(checked)
-                        }
-                    }
+                    onCheckedChange = null
                 )
             }
         }
@@ -247,7 +332,9 @@ fun SettingsScreen(
 
         // Detection Sensitivity Section
         ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .registerSettingsSection(SettingsSection.SENSITIVITY, sectionOffsets),
             shape = RoundedCornerShape(16.dp),
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
         ) {
@@ -331,7 +418,9 @@ fun SettingsScreen(
 
         // Blur Intensity Section
         ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .registerSettingsSection(SettingsSection.INTENSITY, sectionOffsets),
             shape = RoundedCornerShape(16.dp),
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
         ) {
@@ -400,7 +489,9 @@ fun SettingsScreen(
 
         // Blur Style / Variation Section
         ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .registerSettingsSection(SettingsSection.STYLE, sectionOffsets),
             shape = RoundedCornerShape(16.dp),
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
         ) {
@@ -459,7 +550,9 @@ fun SettingsScreen(
 
         // Blur Opacity & Transparency Section
         ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .registerSettingsSection(SettingsSection.OPACITY, sectionOffsets),
             shape = RoundedCornerShape(16.dp),
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
         ) {
@@ -468,6 +561,8 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .padding(20.dp)
             ) {
+                val displayOpacity = sliderOpacity.roundToInt()
+
                 Text(
                     text = "Blur Opacity / Transparency",
                     style = MaterialTheme.typography.titleMedium,
@@ -486,7 +581,7 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = "$blurOpacity% — ${if (blurOpacity == 100) "Completely Solid (Zero Transparency)" else "Translucent"}",
+                    text = "$displayOpacity% — ${if (displayOpacity == 100) "Completely Solid (Zero Transparency)" else "Translucent"}",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.primary
@@ -506,35 +601,41 @@ fun SettingsScreen(
                     )
                 )
 
-                Row(
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     OpacityPresetChip(
                         label = "100% (Solid)",
-                        selected = blurOpacity == 100,
+                        selected = displayOpacity == 100,
                         onClick = {
+                            sliderOpacity = 100f
                             coroutineScope.launch { preferencesManager.setBlurOpacity(100) }
                         }
                     )
                     OpacityPresetChip(
                         label = "90%",
-                        selected = blurOpacity == 90,
+                        selected = displayOpacity == 90,
                         onClick = {
+                            sliderOpacity = 90f
                             coroutineScope.launch { preferencesManager.setBlurOpacity(90) }
                         }
                     )
                     OpacityPresetChip(
                         label = "75%",
-                        selected = blurOpacity == 75,
+                        selected = displayOpacity == 75,
                         onClick = {
+                            sliderOpacity = 75f
                             coroutineScope.launch { preferencesManager.setBlurOpacity(75) }
                         }
                     )
                     OpacityPresetChip(
                         label = "60%",
-                        selected = blurOpacity == 60,
+                        selected = displayOpacity == 60,
                         onClick = {
+                            sliderOpacity = 60f
                             coroutineScope.launch { preferencesManager.setBlurOpacity(60) }
                         }
                     )
@@ -547,6 +648,278 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // ── App Updates Section ─────────────────────────────────────
+        ElevatedCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .registerSettingsSection(SettingsSection.UPDATES, sectionOffsets),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SystemUpdate,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Check for Updates",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        val vName = updateManager.getCurrentVersionName()
+                        val vCode = updateManager.getCurrentVersionCode()
+                        Text(
+                            text = "Installed: v$vName (Build $vCode)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Dynamic Status & Result Display
+                when (val status = updateStatus) {
+                    is UpdateStatus.Checking -> {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = "Checking for new versions online…",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+
+                    is UpdateStatus.UpdateAvailable -> {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.SystemUpdate,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Version v${status.info.versionName} is Available!",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = status.info.releaseNotes.take(120).ifBlank { "Performance updates and fixes available." },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Button(
+                                    onClick = { updateManager.startDownload(status.info) },
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Update Now (v${status.info.versionName})")
+                                }
+                            }
+                        }
+                    }
+
+                    is UpdateStatus.UpToDate -> {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "SaveGaze is up to date",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+
+                    is UpdateStatus.Error -> {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = status.message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        }
+                    }
+
+                    else -> {
+                        val now = System.currentTimeMillis()
+                        if (remindTimestamp > now) {
+                            val remainingHours = ((remindTimestamp - now) / (3600 * 1000L)).coerceAtLeast(1L)
+                            Text(
+                                text = "⏱️ Reminder active: update prompt snoozed for ~$remainingHours h. You can still update anytime below.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else if (!dismissedVersion.isNullOrBlank()) {
+                            Text(
+                                text = "ℹ️ Prompt for v$dismissedVersion was muted with 'Don't show again'. Check manually below anytime.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            Text(
+                                text = "Tap 'Check for Updates' to verify if a newer version of SaveGaze or updated AI models are available.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Prominent Action Button
+                Button(
+                    onClick = { updateManager.checkForUpdates(manual = true) },
+                    enabled = updateStatus !is UpdateStatus.Checking && updateStatus !is UpdateStatus.Downloading,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (updateStatus is UpdateStatus.Checking) "Checking..." else "Check for Updates"
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                Divider(color = MaterialTheme.colorScheme.outlineVariant)
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Auto-check toggle
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(
+                            value = autoCheckUpdates,
+                            onValueChange = { enabled ->
+                                coroutineScope.launch { preferencesManager.setAutoCheckUpdates(enabled) }
+                            },
+                            role = Role.Switch
+                        )
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Auto-Check on App Launch",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Automatically check for newer releases when opening SaveGaze",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = autoCheckUpdates,
+                        onCheckedChange = { enabled ->
+                            coroutineScope.launch { preferencesManager.setAutoCheckUpdates(enabled) }
+                        }
+                    )
+                }
+
+                // If user had set a reminder or dismissed a version, allow resetting
+                if (remindTimestamp > 0L || !dismissedVersion.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextButton(
+                        onClick = {
+                            updateManager.resetUpdatePreferences()
+                            android.widget.Toast.makeText(context, "Update reminders and exclusions reset", android.widget.Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Reset Muted Updates & Reminders")
+                    }
+                }
             }
         }
 
@@ -588,8 +961,10 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium
                         )
+                        val vName = updateManager.getCurrentVersionName()
+                        val vCode = updateManager.getCurrentVersionCode()
                         Text(
-                            text = "Version 1.0.0",
+                            text = "Version $vName (Build $vCode)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -640,7 +1015,10 @@ fun SettingsScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { howItWorksExpanded = !howItWorksExpanded }
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = if (howItWorksExpanded) "Collapse How It Works" else "Expand How It Works"
+                        ) { howItWorksExpanded = !howItWorksExpanded }
                         .padding(20.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -726,13 +1104,17 @@ private fun GenderFilterOption(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
+            .selectable(
+                selected = selected,
+                onClick = onClick,
+                role = Role.RadioButton
+            )
+            .padding(vertical = 10.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         RadioButton(
             selected = selected,
-            onClick = onClick,
+            onClick = null,
             colors = RadioButtonDefaults.colors(
                 selectedColor = MaterialTheme.colorScheme.primary
             )
@@ -764,13 +1146,17 @@ private fun BlurStyleOption(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
+            .selectable(
+                selected = selected,
+                onClick = onClick,
+                role = Role.RadioButton
+            )
+            .padding(vertical = 10.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         RadioButton(
             selected = selected,
-            onClick = onClick,
+            onClick = null,
             colors = RadioButtonDefaults.colors(
                 selectedColor = MaterialTheme.colorScheme.primary
             )
@@ -805,15 +1191,21 @@ private fun OpacityPresetChip(
             1.dp,
             if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
         ),
-        modifier = Modifier.clickable(onClick = onClick)
+        modifier = Modifier
+            .defaultMinSize(minHeight = 44.dp, minWidth = 44.dp)
+            .clickable(role = Role.Button, onClick = onClick)
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-        )
+        Box(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -848,4 +1240,11 @@ private fun HowItWorksStep(
             )
         }
     }
+}
+
+private fun Modifier.registerSettingsSection(
+    section: SettingsSection,
+    offsets: MutableMap<SettingsSection, Int>
+): Modifier = onGloballyPositioned { coordinates ->
+    offsets[section] = coordinates.positionInParent().y.roundToInt()
 }

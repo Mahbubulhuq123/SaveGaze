@@ -35,6 +35,9 @@ class PreferencesManager(private val context: Context) {
         val BLUR_OPACITY = intPreferencesKey("blur_opacity")
         val BLUR_FACES = booleanPreferencesKey("blur_faces")
         val BLUR_FULL_BODY = booleanPreferencesKey("blur_full_body")
+        val DISMISSED_UPDATE_VERSION = stringPreferencesKey("dismissed_update_version")
+        val REMIND_ME_LATER_TIMESTAMP = longPreferencesKey("remind_me_later_timestamp")
+        val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
     }
 
     // ── Flow-based reactive getters ─────────────────────────────────────
@@ -86,6 +89,18 @@ class PreferencesManager(private val context: Context) {
         prefs[Keys.BLUR_FULL_BODY] ?: false
     }
 
+    val dismissedUpdateVersionFlow: Flow<String?> = context.dataStore.data.map { prefs ->
+        prefs[Keys.DISMISSED_UPDATE_VERSION]
+    }
+
+    val remindMeLaterTimestampFlow: Flow<Long> = context.dataStore.data.map { prefs ->
+        prefs[Keys.REMIND_ME_LATER_TIMESTAMP] ?: 0L
+    }
+
+    val autoCheckUpdatesFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.AUTO_CHECK_UPDATES] ?: true
+    }
+
     // ── Suspend getters ─────────────────────────────────────────────────
 
     suspend fun getGenderFilter(): GenderFilter = genderFilterFlow.first()
@@ -107,6 +122,12 @@ class PreferencesManager(private val context: Context) {
     suspend fun getBlurFaces(): Boolean = blurFacesFlow.first()
 
     suspend fun getBlurFullBody(): Boolean = blurFullBodyFlow.first()
+
+    suspend fun getDismissedUpdateVersion(): String? = dismissedUpdateVersionFlow.first()
+
+    suspend fun getRemindMeLaterTimestamp(): Long = remindMeLaterTimestampFlow.first()
+
+    suspend fun getAutoCheckUpdates(): Boolean = autoCheckUpdatesFlow.first()
 
     // ── Suspend setters ─────────────────────────────────────────────────
 
@@ -163,6 +184,36 @@ class PreferencesManager(private val context: Context) {
     suspend fun setBlurFullBody(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[Keys.BLUR_FULL_BODY] = enabled
+        }
+    }
+
+    suspend fun setDismissedUpdateVersion(version: String) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.DISMISSED_UPDATE_VERSION] = version
+        }
+    }
+
+    suspend fun clearDismissedUpdateVersion() {
+        context.dataStore.edit { prefs ->
+            prefs.remove(Keys.DISMISSED_UPDATE_VERSION)
+        }
+    }
+
+    suspend fun setRemindMeLaterTimestamp(timestampMs: Long) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.REMIND_ME_LATER_TIMESTAMP] = timestampMs
+        }
+    }
+
+    suspend fun clearRemindMeLaterTimestamp() {
+        context.dataStore.edit { prefs ->
+            prefs.remove(Keys.REMIND_ME_LATER_TIMESTAMP)
+        }
+    }
+
+    suspend fun setAutoCheckUpdates(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.AUTO_CHECK_UPDATES] = enabled
         }
     }
 }

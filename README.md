@@ -25,8 +25,15 @@
 
 4. **Modern UI & DataStore Settings**
    - Built with **Jetpack Compose + Material 3**.
-   - Reactive status card showing real-time protection state with one-click shortcut to Accessibility settings.
-   - Sensitivity slider (Low / Medium / High) and Blur intensity adjustment (10px–40px radius).
+   - Reactive status card with a one-tap **pause/resume** master switch and a live **protection-health** panel (AI detector, screen overlay, last frame scanned).
+   - One settings surface with deep links from Home, plus sensitivity (Low / Medium / High) and blur intensity adjustment (10px–40px radius).
+
+5. **Direct In-App Updates (No Manual Re-Downloads)**
+   - Automatically checks GitHub Releases for new updates when the app is launched.
+   - Displays an **Update Available Dialog** with release notes, version change (`v1.0 ➔ v1.1`), and download size.
+   - **One-Tap Update**: Streams and downloads the matching APK directly in-app with live progress indicators.
+   - Automatically invokes Android's package installer via secure `FileProvider` so previous versions never need to be uninstalled or manually downloaded via a browser.
+   - Manual check option available anytime in **Settings ➔ About ➔ Check for Updates**.
 
 ---
 
@@ -66,11 +73,12 @@ SaveGaze/
 │   │   │   │   │   └── NudeNetDetector.kt    # ONNX runtime inference & NMS
 │   │   │   │   ├── service/
 │   │   │   │   │   ├── OverlayManager.kt     # System overlay window manager
+│   │   │   │   │   ├── ProtectionHealth.kt   # Live detector/overlay/frame state
 │   │   │   │   │   └── SaveGazeAccessibilityService.kt # Core screenshot & blur loop
 │   │   │   │   ├── ui/
 │   │   │   │   │   ├── screens/
-│   │   │   │   │   │   ├── HomeScreen.kt     # Dashboard & quick toggles
-│   │   │   │   │   │   └── SettingsScreen.kt # Gender filter & sensitivity sliders
+│   │   │   │   │   │   ├── HomeScreen.kt     # Status, health & settings shortcuts
+│   │   │   │   │   │   └── SettingsScreen.kt # Single settings surface & deep-link anchors
 │   │   │   │   │   └── theme/
 │   │   │   │   │       └── Theme.kt          # Material 3 theme
 │   │   │   │   └── util/

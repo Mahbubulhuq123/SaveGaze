@@ -8,6 +8,7 @@ import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -29,7 +30,11 @@ class OverlayManager(private val context: Context) {
 
     private val overlayView = BlurOverlayView(context)
 
+    @Volatile
     private var showing = false
+
+    /** Reports attach/detach events so the service can publish accurate health state. */
+    private var onVisibilityChanged: ((Boolean) -> Unit)? = null
 
     private val layoutParams: WindowManager.LayoutParams =
         WindowManager.LayoutParams(
@@ -46,16 +51,23 @@ class OverlayManager(private val context: Context) {
 
     // ── Public API ───────────────────────────────────────────────────────
 
+    /** Registers a listener invoked on the main thread whenever the overlay attaches or detaches. */
+    fun setOnVisibilityChangedListener(listener: ((Boolean) -> Unit)?) {
+        onVisibilityChanged = listener
+    }
+
     /** Adds the overlay view to the window manager. */
     fun showOverlay() {
         mainHandler.post {
-            if (!showing) {
-                try {
-                    windowManager.addView(overlayView, layoutParams)
-                    showing = true
-                } catch (_: IllegalStateException) {
-                    // View is already attached – nothing to do.
-                }
+            if (showing) return@post
+            try {
+                windowManager.addView(overlayView, layoutParams)
+                showing = true
+                onVisibilityChanged?.invoke(true)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to add the protection overlay", e)
+                showing = false
+                onVisibilityChanged?.invoke(false)
             }
         }
     }
@@ -70,6 +82,7 @@ class OverlayManager(private val context: Context) {
                     // View was not attached – ignore.
                 }
                 showing = false
+                onVisibilityChanged?.invoke(false)
             }
         }
     }
@@ -128,6 +141,10 @@ class OverlayManager(private val context: Context) {
      * A transparent [View] that draws filled, rounded rectangles
      * for every blur region supplied via [setRegions].
      */
+    private companion object {
+        private const val TAG = "OverlayManager"
+    }
+
     private class BlurOverlayView(context: Context) : View(context) {
 
         /** Current list of bounding boxes to blur (pixel coordinates). */

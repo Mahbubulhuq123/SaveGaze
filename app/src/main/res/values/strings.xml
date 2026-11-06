@@ -3,5 +3,6 @@
     <string name="accessibility_service_description">SaveGaze uses accessibility to detect and blur inappropriate content across all apps on your device. All processing is done on-device — no data leaves your phone.</string>
     <string name="service_notification_channel">SaveGaze Protection</string>
     <string name="service_running">SaveGaze is protecting your screen</string>
+    <string name="service_paused">SaveGaze is paused</string>
 </resources>
 

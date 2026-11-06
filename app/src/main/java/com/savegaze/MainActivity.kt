@@ -21,6 +21,9 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -28,11 +31,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.savegaze.data.PreferencesManager
 import com.savegaze.service.SaveGazeAccessibilityService
 import com.savegaze.ui.screens.HomeScreen
 import com.savegaze.ui.screens.SettingsScreen
+import com.savegaze.ui.screens.SettingsSection
 import com.savegaze.ui.theme.SaveGazeTheme
+import com.savegaze.update.AppUpdateManager
+import com.savegaze.update.UpdateDialog
+import com.savegaze.update.UpdateStatus
 
 class MainActivity : ComponentActivity() {
 
@@ -60,16 +71,26 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        try {
+            enableEdgeToEdge()
+        } catch (e: Throwable) {
+            android.util.Log.w("MainActivity", "EdgeToEdge warning: ${e.message}")
+        }
 
-        hasProjectionPermission = SaveGazeAccessibilityService.hasMediaProjection()
+        try {
+            hasProjectionPermission = SaveGazeAccessibilityService.hasMediaProjection()
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Failed to check media projection state", e)
+        }
 
         val preferencesManager = PreferencesManager(applicationContext)
+        val updateManager = AppUpdateManager.getInstance(applicationContext)
 
         setContent {
             SaveGazeTheme {
                 SaveGazeApp(
                     preferencesManager = preferencesManager,
+                    updateManager = updateManager,
                     hasMediaProjection = hasProjectionPermission,
                     onRequestMediaProjection = { requestScreenCapturePermission() }
                 )
@@ -86,10 +107,50 @@ private data class NavigationItem(
 @Composable
 private fun SaveGazeApp(
     preferencesManager: PreferencesManager,
+    updateManager: AppUpdateManager,
     hasMediaProjection: Boolean,
     onRequestMediaProjection: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
+    var pendingSettingsSection by remember { mutableStateOf<SettingsSection?>(null) }
+
+    val updateStatus by updateManager.status.collectAsState()
+    val currentVersion = remember { updateManager.getCurrentVersionName() }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Check for updates automatically in background on launch
+    LaunchedEffect(Unit) {
+        updateManager.checkForUpdates(manual = false)
+    }
+
+    // Auto-resume installation if user returns from granting unknown sources permission
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val current = updateManager.status.value
+                if (current is UpdateStatus.PermissionRequired) {
+                    if (updateManager.canInstallUnknownApps()) {
+                        updateManager.installApk(current.apkFile)
+                    }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Modal In-App Update Dialog
+    UpdateDialog(
+        status = updateStatus,
+        currentVersion = currentVersion,
+        onStartDownload = { info -> updateManager.startDownload(info) },
+        onCancelDownload = { updateManager.cancelDownload() },
+        onInstallApk = { file -> updateManager.installApk(file) },
+        onOpenSettings = { updateManager.openInstallPermissionSettings() },
+        onDismiss = { updateManager.dismissUpdate() },
+        onDismissWithDontShowAgain = { versionName -> updateManager.dismissUpdateWithDontShowAgain(versionName) },
+        onRemindLater = { delayMillis -> updateManager.remindMeLater(delayMillis) }
+    )
 
     val navigationItems = remember {
         listOf(
@@ -108,7 +169,10 @@ private fun SaveGazeApp(
                 navigationItems.forEachIndexed { index, item ->
                     NavigationBarItem(
                         selected = selectedTab == index,
-                        onClick = { selectedTab = index },
+                        onClick = {
+                            pendingSettingsSection = null
+                            selectedTab = index
+                        },
                         icon = {
                             Icon(
                                 imageVector = item.icon,
@@ -124,12 +188,20 @@ private fun SaveGazeApp(
         when (selectedTab) {
             0 -> HomeScreen(
                 preferencesManager = preferencesManager,
+                updateManager = updateManager,
+                onOpenSettings = { section ->
+                    pendingSettingsSection = section
+                    selectedTab = 1
+                },
                 hasMediaProjection = hasMediaProjection,
                 onRequestMediaProjection = onRequestMediaProjection,
                 modifier = Modifier.padding(innerPadding)
             )
             1 -> SettingsScreen(
                 preferencesManager = preferencesManager,
+                updateManager = updateManager,
+                sectionToReveal = pendingSettingsSection,
+                onSectionRevealed = { pendingSettingsSection = null },
                 modifier = Modifier.padding(innerPadding)
             )
         }
