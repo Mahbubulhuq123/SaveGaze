@@ -507,22 +507,22 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 filtered.faces.map { it.box }
             }
 
-            // In FEMALE_ONLY mode: purge any candidate or tracked boxes located in male columns
+            // In FEMALE_ONLY mode: purge any candidate or tracked boxes touching male columns
             if (genderFilter == GenderFilter.FEMALE_ONLY) {
                 val maleFaces = filtered.faces.filter { it.label == com.savegaze.ml.NudeLabel.FACE_MALE }
                 if (maleFaces.isNotEmpty()) {
                     candidateBoxes.removeAll { c ->
                         maleFaces.any { m ->
-                            val colLeft = m.box.x1 - m.box.width * 0.50f
-                            val colRight = m.box.x2 + m.box.width * 0.50f
-                            c.centerX in colLeft..colRight
+                            val colLeft = m.box.x1 - m.box.width * 0.55f
+                            val colRight = m.box.x2 + m.box.width * 0.55f
+                            c.centerX in colLeft..colRight || (c.x1 < colRight && c.x2 > colLeft)
                         }
                     }
                     trackedBoxes.removeAll { t ->
                         maleFaces.any { m ->
-                            val colLeft = m.box.x1 - m.box.width * 0.50f
-                            val colRight = m.box.x2 + m.box.width * 0.50f
-                            t.box.centerX in colLeft..colRight
+                            val colLeft = m.box.x1 - m.box.width * 0.55f
+                            val colRight = m.box.x2 + m.box.width * 0.55f
+                            t.box.centerX in colLeft..colRight || (t.box.x1 < colRight && t.box.x2 > colLeft)
                         }
                     }
                 }
@@ -531,16 +531,16 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 if (femaleFaces.isNotEmpty()) {
                     candidateBoxes.removeAll { c ->
                         femaleFaces.any { f ->
-                            val colLeft = f.box.x1 - f.box.width * 0.50f
-                            val colRight = f.box.x2 + f.box.width * 0.50f
-                            c.centerX in colLeft..colRight
+                            val colLeft = f.box.x1 - f.box.width * 0.55f
+                            val colRight = f.box.x2 + f.box.width * 0.55f
+                            c.centerX in colLeft..colRight || (c.x1 < colRight && c.x2 > colLeft)
                         }
                     }
                     trackedBoxes.removeAll { t ->
                         femaleFaces.any { f ->
-                            val colLeft = f.box.x1 - f.box.width * 0.50f
-                            val colRight = f.box.x2 + f.box.width * 0.50f
-                            t.box.centerX in colLeft..colRight
+                            val colLeft = f.box.x1 - f.box.width * 0.55f
+                            val colRight = f.box.x2 + f.box.width * 0.55f
+                            t.box.centerX in colLeft..colRight || (t.box.x1 < colRight && t.box.x2 > colLeft)
                         }
                     }
                 }
@@ -589,12 +589,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Hard scene cut to a new scene:
+        // Hard scene cut to a new scene (e.g. video switch or new page):
+        // If the new scene has no candidates, clear immediately so blur never lingers on non-NSFW content!
         if (isSceneCut) {
-            // If the new scene has no candidates, clear quickly (300ms) so blur doesn't linger on non-NSFW
-            trackedBoxes.removeAll { now - it.lastSeenMs > 300L }
+            trackedBoxes.clear()
             if (candidateBoxes.isEmpty()) {
-                return trackedBoxes.map { it.box }
+                return emptyList()
             }
         }
 
@@ -627,8 +627,19 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val tracked = trackedBoxes[bestIdx]
                 tracked.lastSeenMs = now
 
-                // Static screen (images, paused video): 100% frozen in place! Zero jitter!
+                // Static screen (images, paused video):
+                // If the candidate box expanded (e.g. side-profile breast or intimate contour newly detected),
+                // smoothly expand the tracked box to cover it completely!
                 if (isStaticScreen) {
+                    if (cand.x1 < tracked.box.x1 - 4f || cand.x2 > tracked.box.x2 + 4f ||
+                        cand.y1 < tracked.box.y1 - 4f || cand.y2 > tracked.box.y2 + 4f) {
+                        tracked.box = com.savegaze.ml.BoundingBox(
+                            minOf(tracked.box.x1, cand.x1),
+                            minOf(tracked.box.y1, cand.y1),
+                            maxOf(tracked.box.x2, cand.x2),
+                            maxOf(tracked.box.y2, cand.y2)
+                        )
+                    }
                     continue
                 }
 
@@ -644,7 +655,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val bodyMoved = cxDist > deadbandX || cyDist > deadbandY || wDiff > 16f || hDiff > 16f
                 if (bodyMoved) {
                     // Smooth tracking in video: lerp toward new position
-                    val alpha = 0.60f
+                    val alpha = 0.50f
                     val newX1 = tracked.box.x1 * (1f - alpha) + cand.x1 * alpha
                     val newY1 = tracked.box.y1 * (1f - alpha) + cand.y1 * alpha
                     val newX2 = tracked.box.x2 * (1f - alpha) + cand.x2 * alpha
@@ -659,13 +670,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         // Phase 3: Expiry
         if (candidateBoxes.isEmpty()) {
             // No candidates detected in this frame:
-            // Static screens maintain up to 15s to bridge inference;
-            // Video / motion content maintains 800ms grace period so blur NEVER blinks
-            val maxAge = if (isStaticScreen) 15000L else 800L
+            // Static screens maintain 1200ms grace period to bridge inference;
+            // Video / motion content maintains 280ms grace period so blur immediately tracks movement
+            // and never lingers over animals, furniture, or background objects!
+            val maxAge = if (isStaticScreen) 1200L else 280L
             trackedBoxes.removeAll { now - it.lastSeenMs > maxAge }
         } else {
-            // Candidates exist: prune unmatched boxes that haven't been seen in 800ms
-            val maxAge = if (isStaticScreen) 15000L else 800L
+            // Candidates exist: prune unmatched boxes that haven't been seen in 280ms (video) or 1200ms (static)
+            val maxAge = if (isStaticScreen) 1200L else 280L
             val matchedBoxes = matchedTrackedIndices.map { trackedBoxes[it] }.toSet()
             trackedBoxes.removeAll { it !in matchedBoxes && (now - it.lastSeenMs > maxAge) }
         }
@@ -682,14 +694,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         bitmap: Bitmap,
         excludeBoxes: List<com.savegaze.ml.BoundingBox> = emptyList()
     ): IntArray {
-        val sig = IntArray(36)
+        val sig = IntArray(100)
         val w = bitmap.width
         val h = bitmap.height
         var idx = 0
-        for (row in 1..6) {
-            for (col in 1..6) {
-                val x = (w * col / 7).coerceIn(0, w - 1)
-                val y = (h * row / 7).coerceIn(0, h - 1)
+        for (row in 1..10) {
+            for (col in 1..10) {
+                val x = (w * col / 11).coerceIn(0, w - 1)
+                val y = (h * row / 11).coerceIn(0, h - 1)
                 val insideExcluded = excludeBoxes.any { b ->
                     x.toFloat() >= b.x1 && x.toFloat() <= b.x2 &&
                     y.toFloat() >= b.y1 && y.toFloat() <= b.y2
@@ -721,12 +733,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
         }
 
-        if (totalValid < 6) return ScreenChangeResult(isStatic = true, isSceneCut = false)
+        if (totalValid < 10) return ScreenChangeResult(isStatic = false, isSceneCut = true)
 
         val matchRate = totalMatches.toFloat() / totalValid.toFloat()
-        // Scene cut: less than 30% of the screen matches → completely different content
-        val isSceneCut = matchRate < 0.30f
-        val isStatic = matchRate >= 0.70f
+        // Scene cut: less than 50% of valid screen points match → switched video/page
+        val isSceneCut = matchRate < 0.50f
+        val isStatic = matchRate >= 0.85f
 
         return ScreenChangeResult(isStatic = isStatic, isSceneCut = isSceneCut)
     }

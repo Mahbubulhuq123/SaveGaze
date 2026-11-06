@@ -599,6 +599,71 @@ class DetectionFilterTest {
         assertTrue("Male leg shield must cover shorts and thighs down to knees", maleLegs.y2 >= 700f)
     }
 
+    @Test
+    fun testSideProfileBreastFullyCoveredOnLeftMargin() {
+        // Woman in side-profile (like Sydney Sweeney in Vogue):
+        // Face is at x=193..282 (cx=237.5), side breast projects forward to the left at x=140..196
+        val sideFace = Detection(NudeLabel.FACE_FEMALE, 0.83f, BoundingBox(193f, 258f, 282f, 355f))
+        val sideBreast = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.75f, BoundingBox(140f, 454f, 196f, 557f))
+
+        val detections = listOf(sideFace, sideBreast)
+        val filtered = filterDetectionsHelper(detections, GenderFilter.FEMALE_ONLY)
+
+        assertTrue("Side profile woman must produce blur shields", filtered.mergedBlurBoxes.isNotEmpty())
+        // Shield must fully engulf the protruding left breast (x1 <= 140f) and cover up to chin line (y1 <= 355f)
+        val shield = filtered.mergedBlurBoxes.first { it.y1 <= 355f }
+        assertTrue("Shield must cover protruding side-breast on left margin (x1 <= 140f, was ${shield.x1})", shield.x1 <= 140f)
+        assertTrue("Shield must cover across chest/torso (x2 >= 196f, was ${shield.x2})", shield.x2 >= 196f)
+    }
+
+    @Test
+    fun testUpperBodyPortraitDoesNotGenerateDownwardLegOverflow() {
+        // Portrait photo framed from waist up: woman in dress/gown with upper chest/cleavage exposed,
+        // but NO pelvis, NO feet on screen.
+        val face = Detection(NudeLabel.FACE_FEMALE, 0.90f, BoundingBox(200f, 200f, 300f, 320f))
+        val dressCleavage = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.85f, BoundingBox(180f, 360f, 320f, 480f))
+
+        val detections = listOf(face, dressCleavage)
+        val filtered = filterDetectionsHelper(detections, GenderFilter.FEMALE_ONLY, blurFullBody = false)
+
+        assertTrue("Portrait must produce blur shields", filtered.mergedBlurBoxes.isNotEmpty())
+        // Shield must stop at the waist/photo boundary and NOT add a massive downward leg extension
+        val maxShieldY2 = filtered.mergedBlurBoxes.maxOf { it.y2 }
+        assertTrue("Upper-body portrait shield must end near waist (y2 <= 550f, was $maxShieldY2)", maxShieldY2 <= 550f)
+    }
+
+    @Test
+    fun testCleanShavedMaleWithShirtNeverBlurredInFemaleOnlyMode() {
+        // Clean-shaved male with long hair wearing an ordinary shirt / t-shirt:
+        // May get a weak FEMALE_BREAST_COVERED on shirt folds (0.18f), but has no exposed anatomy.
+        val maleFace = Detection(NudeLabel.FACE_MALE, 0.70f, BoundingBox(180f, 150f, 280f, 270f))
+        val shirtWrinkle = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.18f, BoundingBox(160f, 300f, 300f, 450f))
+
+        val detections = listOf(maleFace, shirtWrinkle)
+        val filtered = filterDetectionsHelper(detections, GenderFilter.FEMALE_ONLY)
+
+        // Clothed male must NEVER produce any blur in FEMALE_ONLY mode!
+        assertTrue("Clothed male must not have any blur", filtered.toBlur.isEmpty())
+        assertTrue("Clothed male must have no blur shields", filtered.mergedBlurBoxes.isEmpty())
+        assertFalse("Scene with clothed male has no NSFW", filtered.hasNsfwContent)
+    }
+
+    @Test
+    fun testAnimalOrInanimateObjectNeverBlurred() {
+        // Spurious headless false positives on animals (dog paws, fur) or furniture (cushions, pillows)
+        val dogPaw = Detection(NudeLabel.FEET_EXPOSED, 0.16f, BoundingBox(100f, 500f, 180f, 580f))
+        val couchCushion = Detection(NudeLabel.BUTTOCKS_COVERED, 0.18f, BoundingBox(400f, 600f, 600f, 750f))
+        val backpack = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.17f, BoundingBox(200f, 300f, 350f, 450f))
+
+        val detections = listOf(dogPaw, couchCushion, backpack)
+        val filtered = filterDetectionsHelper(detections, GenderFilter.BOTH)
+
+        // Animals and non-living objects must NEVER produce any blur!
+        assertTrue("Animals and objects must produce zero blur detections", filtered.toBlur.isEmpty())
+        assertTrue("Animals and objects must produce zero blur shields", filtered.mergedBlurBoxes.isEmpty())
+        assertFalse("Animals and objects have no NSFW", filtered.hasNsfwContent)
+    }
+
     // Helper implementing the exact filtering logic from NudeNetDetector
     private enum class ClusterGender {
         FEMALE,
@@ -634,31 +699,31 @@ class DetectionFilterTest {
             val hasFemaleFace = faces.any { it.label == NudeLabel.FACE_FEMALE }
             val hasMaleFace = faces.any { it.label == NudeLabel.FACE_MALE }
 
-            // 1. A cluster with a confirmed male face is ALWAYS male (clothing false-positives never override a male face)
-            if (hasMaleFace && !hasFemaleFace) return ClusterGender.MALE
-
-            // 2. A cluster with a confirmed female face is ALWAYS female
-            if (hasFemaleFace && !hasMaleFace) return ClusterGender.FEMALE
-
-            // 3. Anatomical intimate parts (when headless or both faces present)
+            // 1. Anatomical intimate parts have the HIGHEST authority (shirtless male, female breasts):
             val hasFemaleExposed = intimateDetections.any {
                 it.label == NudeLabel.FEMALE_BREAST_EXPOSED || it.label == NudeLabel.FEMALE_GENITALIA_EXPOSED
             }
             val hasMaleSpecific = intimateDetections.any { it.label.isFemale == false }
 
-            if (hasFemaleExposed && !hasMaleSpecific) return ClusterGender.FEMALE
+            // Shirtless male or male genitalia is 100% male, regardless of face hair length
             if (hasMaleSpecific && !hasFemaleExposed) return ClusterGender.MALE
+            if (hasFemaleExposed && !hasMaleSpecific) return ClusterGender.FEMALE
+
+            // 2. Confirmed male face (calibrated for long-haired clean-shaved males)
+            if (hasMaleFace && !hasFemaleFace) return ClusterGender.MALE
+
+            // 3. Confirmed female face
+            if (hasFemaleFace && !hasMaleFace) return ClusterGender.FEMALE
 
             val hasFemaleCovered = intimateDetections.any {
                 it.label == NudeLabel.FEMALE_BREAST_COVERED || it.label == NudeLabel.FEMALE_GENITALIA_COVERED
             }
             if (hasFemaleCovered && !hasMaleSpecific) {
-                // If scene has a male face and no female face, covered clothing detection is likely false positive on male
                 if (sceneHasMaleFace && !sceneHasFemaleFace) return ClusterGender.MALE
                 return ClusterGender.FEMALE
             }
 
-            // 4. Cluster has NO face and NO gender-specific body parts (only neutral parts: belly, buttocks, armpits):
+            // 4. Cluster has NO face and NO gender-specific body parts:
             val sceneHasMale = sceneHasMaleFace || sceneHasMaleSpecific
             val sceneHasFemale = sceneHasFemaleFace || sceneHasFemaleSpecific
             if (sceneHasMale && !sceneHasFemale) return ClusterGender.MALE
@@ -729,7 +794,8 @@ class DetectionFilterTest {
                 if (detIsStrictMale && (c.faces.any { it.label == NudeLabel.FACE_FEMALE } || c.intimateDetections.any { it.label.isFemale == true })) continue
 
                 val dist = kotlin.math.abs(box.centerX - c.centerX)
-                val allowDist = maxOf(c.width, box.width) * 0.55f
+                val faceW = c.faces.maxOfOrNull { it.box.width } ?: c.width
+                val allowDist = maxOf(c.width * 0.60f, box.width * 0.60f, faceW * 0.90f)
                 val faceBottom = c.faces.maxOfOrNull { it.box.y2 }
                 val verticalOk = faceBottom == null || box.y2 >= faceBottom - 30f
 
@@ -770,7 +836,8 @@ class DetectionFilterTest {
             for (c in clusters) {
                 if (fbox.y1 >= c.minY) {
                     val d = kotlin.math.abs(fbox.centerX - c.centerX)
-                    if (d < minDist && d < maxOf(c.width, fbox.width) * 0.65f) {
+                    val faceW = c.faces.maxOfOrNull { it.box.width } ?: c.width
+                    if (d < minDist && d < maxOf(c.width * 0.60f, fbox.width * 0.60f, faceW * 0.90f)) {
                         minDist = d
                         bestCluster = c
                     }
@@ -779,8 +846,47 @@ class DetectionFilterTest {
             bestCluster?.feet?.add(fbox)
         }
 
+        // 4. Filter clusters by GenderFilter & reject animal/object false positives:
         val keptClusters = clusters.filter { c ->
             if (c.intimateDetections.isEmpty()) return@filter false
+
+            // Animal & Inanimate Object Rejection Filter:
+            // A cluster with NO human face is only valid if it exhibits confirmed human anatomy:
+            if (c.faces.isEmpty()) {
+                val hasStrictExposedAnatomy = c.intimateDetections.any {
+                    it.label in setOf(
+                        NudeLabel.FEMALE_BREAST_EXPOSED,
+                        NudeLabel.FEMALE_GENITALIA_EXPOSED,
+                        NudeLabel.MALE_GENITALIA_EXPOSED,
+                        NudeLabel.MALE_BREAST_EXPOSED,
+                        NudeLabel.BUTTOCKS_EXPOSED
+                    )
+                }
+                val hasMultiPartHumanBody = c.intimateDetections.size >= 2
+                val hasStrongConfidence = c.intimateDetections.any { it.confidence >= 0.40f }
+
+                val isConfirmedHumanBody = hasStrictExposedAnatomy || hasMultiPartHumanBody || hasStrongConfidence
+                if (!isConfirmedHumanBody) {
+                    return@filter false // Discard animal/object false positive!
+                }
+            }
+
+            // Normal Clothed Person False-Positive Filter:
+            // If a person has a face, but their only intimate detection is a weak FEMALE_BREAST_COVERED (< 0.25f),
+            // and they have NO exposed skin (no cleavage, no exposed armpits/back, no exposed belly, no pelvis):
+            // they are wearing ordinary clothing (t-shirt/suit/shirt). Do NOT blur!
+            val onlyWeakCoveredChest = c.faces.isNotEmpty() &&
+                    c.upper.isNotEmpty() &&
+                    c.upper.all { it.label == NudeLabel.FEMALE_BREAST_COVERED && it.confidence < 0.25f } &&
+                    c.pelvis.isEmpty() &&
+                    c.belly.isEmpty() &&
+                    c.others.isEmpty() &&
+                    c.upper.none { it.label == NudeLabel.ARMPITS_EXPOSED || it.label == NudeLabel.FEMALE_BREAST_EXPOSED }
+
+            if (onlyWeakCoveredChest) {
+                return@filter false // Discard ordinary shirt/clothing false positive!
+            }
+
             val gender = c.inferGender(
                 sceneHasFemaleFace,
                 sceneHasMaleFace,
@@ -923,8 +1029,8 @@ class DetectionFilterTest {
                     ClusterGender.UNKNOWN -> true
                 }
                 faceGenderMatch &&
-                kotlin.math.abs(refCx - f.box.centerX) < maxOf(c.width, f.box.width * 1.5f) * 0.70f &&
-                f.box.y2 <= c.minY + 200f &&
+                kotlin.math.abs(refCx - f.box.centerX) < maxOf(c.width * 1.6f, f.box.width * 2.0f) * 0.75f &&
+                f.box.y2 <= c.minY + 250f &&
                 f.box.y1 <= c.maxY
             }
 
@@ -1006,23 +1112,33 @@ class DetectionFilterTest {
             val maxLeft = if (leftNeighbor != null) (personCenterX + leftNeighbor) / 2f + 4f else 0f
             val maxRight = if (rightNeighbor != null) (personCenterX + rightNeighbor) / 2f - 4f else Float.MAX_VALUE
 
-            val hasUpper = c.upper.isNotEmpty()
             val hasBelly = c.belly.isNotEmpty()
             val hasPelvis = c.pelvis.isNotEmpty()
 
-            // Snug, natural body contour:
-            val padX = if (hasArmpits) 24f else 16f
-            var torsoX1 = (c.minX - padX).coerceAtLeast(0f)
-            var torsoX2 = c.maxX + padX
+            // Snug, natural body contour that strictly encompasses side-profile breasts and cleavage:
+            val padX = if (hasArmpits) 24f else 18f
+            val intimateMinX = c.intimateDetections.minOfOrNull { it.box.x1 } ?: c.minX
+            val intimateMaxX = c.intimateDetections.maxOfOrNull { it.box.x2 } ?: c.maxX
+
+            var torsoX1 = minOf(c.minX - padX, intimateMinX - padX).coerceAtLeast(0f)
+            var torsoX2 = maxOf(c.maxX + padX, intimateMaxX + padX)
 
             if (matchingFace != null) {
                 torsoX1 = minOf(torsoX1, matchingFace.box.centerX - faceW * 1.1f).coerceAtLeast(0f)
                 torsoX2 = maxOf(torsoX2, matchingFace.box.centerX + faceW * 1.1f)
             }
 
-            // Clamp strictly to multi-person midpoint
-            torsoX1 = maxOf(torsoX1, maxLeft)
-            torsoX2 = minOf(torsoX2, maxRight)
+            // Ensure intimate parts are NEVER clipped:
+            torsoX1 = minOf(torsoX1, intimateMinX - 10f).coerceAtLeast(0f)
+            torsoX2 = maxOf(torsoX2, intimateMaxX + 10f)
+
+            // Clamp strictly to multi-person midpoint, but never cut into intimate detections
+            if (leftNeighbor != null && maxLeft < intimateMinX) {
+                torsoX1 = maxOf(torsoX1, maxLeft)
+            }
+            if (rightNeighbor != null && maxRight > intimateMaxX) {
+                torsoX2 = minOf(torsoX2, maxRight)
+            }
 
             if (torsoX2 > torsoX1 && botPelvis > topY) {
                 shields.add(BoundingBox(
@@ -1033,13 +1149,18 @@ class DetectionFilterTest {
                 ))
             }
 
-            // 4. Leg Shield: snugly covers below pelvis for women in swimwear/shorts/bikini/legs
+            // 4. Leg Shield: ONLY generated when lower body / pelvis / exposed belly is present on screen
+            // NEVER generate downward leg shields on upper-body portrait crops or formal dresses!
             if (!blurFullBody) {
-                if (isMale && (hasUpper || hasBelly || hasPelvis)) {
+                if (isMale && (hasBelly || hasPelvis || c.feet.isNotEmpty())) {
                     val maleLegExtent = if (c.feet.isNotEmpty()) {
                         (c.feet.maxOf { it.y2 } + 10f) - botPelvis
-                    } else {
+                    } else if (hasPelvis) {
                         minOf(c.height * 0.60f, 200f)
+                    } else if (hasBelly && matchingFace != null) {
+                        matchingFace.box.height * 2.2f
+                    } else {
+                        minOf(c.height * 0.40f, 150f)
                     }
                     if (maleLegExtent > 10f) {
                         shields.add(BoundingBox(
@@ -1049,13 +1170,14 @@ class DetectionFilterTest {
                             y2 = botPelvis + maleLegExtent
                         ))
                     }
-                } else if (!isMale && (hasUpper || hasBelly || hasPelvis || c.feet.isNotEmpty())) {
+                } else if (!isMale && (hasPelvis || hasBelly || c.feet.isNotEmpty())) {
+                    // Female in bikini / swimwear / shorts / naked legs (pelvis, belly, or feet detected)
                     val femaleLegExtent = if (c.feet.isNotEmpty()) {
                         (c.feet.maxOf { it.y2 } + 15f) - botPelvis
                     } else if (matchingFace != null) {
-                        maxOf(c.height * 1.2f, matchingFace.box.height * 3.5f, 420f)
+                        maxOf(c.height * 1.2f, matchingFace.box.height * 3.5f, 380f)
                     } else {
-                        maxOf(c.height * 1.2f, 420f)
+                        maxOf(c.height * 1.2f, 350f)
                     }
                     if (femaleLegExtent > 10f) {
                         val legX1 = if (c.feet.isNotEmpty()) minOf(torsoX1, c.feet.minOf { it.x1 } - 10f) else torsoX1 + 4f
@@ -1094,7 +1216,7 @@ class DetectionFilterTest {
                     val ox = minOf(curr.x2, cand.x2) - maxOf(curr.x1, cand.x1)
                     val oy = minOf(curr.y2, cand.y2) - maxOf(curr.y1, cand.y1)
                     val iou = curr.iou(cand)
-                    val shouldMerge = (ox > 0 && oy > 0) && (iou > 0.15f || ox > minOf(curr.width, cand.width) * 0.40f)
+                    val shouldMerge = (ox > 0 && oy >= -8f) && (iou > 0.10f || ox > minOf(curr.width, cand.width) * 0.40f)
                     if (shouldMerge) {
                         curr = BoundingBox(
                             minOf(curr.x1, cand.x1),
