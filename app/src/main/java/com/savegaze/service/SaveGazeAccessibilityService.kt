@@ -591,11 +591,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
         // Hard scene cut to a new scene (e.g. video switch or new page):
         // If the new scene has no candidates, clear immediately so blur never lingers on non-NSFW content!
-        if (isSceneCut) {
+        if (isSceneCut && candidateBoxes.isEmpty()) {
             trackedBoxes.clear()
-            if (candidateBoxes.isEmpty()) {
-                return emptyList()
-            }
+            return emptyList()
         }
 
         // Phase 2: Match candidates to tracked boxes
@@ -670,14 +668,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         // Phase 3: Expiry
         if (candidateBoxes.isEmpty()) {
             // No candidates detected in this frame:
-            // Static screens maintain 1200ms grace period to bridge inference;
-            // Video / motion content maintains 280ms grace period so blur immediately tracks movement
-            // and never lingers over animals, furniture, or background objects!
-            val maxAge = if (isStaticScreen) 1200L else 280L
+            // Static screens maintain 10s grace period;
+            // Video / motion content maintains 950ms grace period (bridges 2 inference cycles)
+            // so blur NEVER blinks or flickers during video playback!
+            val maxAge = if (isStaticScreen) 10000L else 950L
             trackedBoxes.removeAll { now - it.lastSeenMs > maxAge }
         } else {
-            // Candidates exist: prune unmatched boxes that haven't been seen in 280ms (video) or 1200ms (static)
-            val maxAge = if (isStaticScreen) 1200L else 280L
+            // Candidates exist: prune unmatched boxes that haven't been seen in 950ms (video) or 10000ms (static)
+            val maxAge = if (isStaticScreen) 10000L else 950L
             val matchedBoxes = matchedTrackedIndices.map { trackedBoxes[it] }.toSet()
             trackedBoxes.removeAll { it !in matchedBoxes && (now - it.lastSeenMs > maxAge) }
         }
@@ -736,9 +734,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         if (totalValid < 10) return ScreenChangeResult(isStatic = false, isSceneCut = true)
 
         val matchRate = totalMatches.toFloat() / totalValid.toFloat()
-        // Scene cut: less than 50% of valid screen points match → switched video/page
-        val isSceneCut = matchRate < 0.50f
-        val isStatic = matchRate >= 0.85f
+        // Scene cut: less than 20% of valid screen points match → switched app or scrolled completely past
+        val isSceneCut = matchRate < 0.20f
+        val isStatic = matchRate >= 0.65f
 
         return ScreenChangeResult(isStatic = isStatic, isSceneCut = isSceneCut)
     }

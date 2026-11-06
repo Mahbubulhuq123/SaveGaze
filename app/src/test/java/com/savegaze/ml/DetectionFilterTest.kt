@@ -664,6 +664,28 @@ class DetectionFilterTest {
         assertFalse("Animals and objects have no NSFW", filtered.hasNsfwContent)
     }
 
+    @Test
+    fun testLongHairedCleanShavedMaleWearingShirtNeverBlurredInFemaleOnlyOrBoth() {
+        // Kushal Tanwar scenario: clean-shaved male with long hair & sunglasses, wearing light blue shirt.
+        // Calibrated face detection correctly identified as FACE_MALE, shirt fold scores 0.28f on covered breast.
+        val maleFace = Detection(NudeLabel.FACE_MALE, 0.65f, BoundingBox(185f, 237f, 248f, 338f))
+        val shirtFold = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.28f, BoundingBox(220f, 380f, 298f, 515f))
+
+        val detections = listOf(maleFace, shirtFold)
+
+        // 1. Female only mode
+        val femaleOnlyFiltered = filterDetectionsHelper(detections, GenderFilter.FEMALE_ONLY)
+        assertTrue("Male in shirt must not be blurred in FEMALE_ONLY", femaleOnlyFiltered.toBlur.isEmpty())
+        assertTrue("Male in shirt must have no shields in FEMALE_ONLY", femaleOnlyFiltered.mergedBlurBoxes.isEmpty())
+        assertFalse(femaleOnlyFiltered.hasNsfwContent)
+
+        // 2. Both mode
+        val bothFiltered = filterDetectionsHelper(detections, GenderFilter.BOTH)
+        assertTrue("Clothed person without exposed skin must not be blurred in BOTH", bothFiltered.toBlur.isEmpty())
+        assertTrue("Clothed person without exposed skin must have no shields in BOTH", bothFiltered.mergedBlurBoxes.isEmpty())
+        assertFalse(bothFiltered.hasNsfwContent)
+    }
+
     // Helper implementing the exact filtering logic from NudeNetDetector
     private enum class ClusterGender {
         FEMALE,
@@ -872,18 +894,28 @@ class DetectionFilterTest {
             }
 
             // Normal Clothed Person False-Positive Filter:
-            // If a person has a face, but their only intimate detection is a weak FEMALE_BREAST_COVERED (< 0.25f),
-            // and they have NO exposed skin (no cleavage, no exposed armpits/back, no exposed belly, no pelvis):
-            // they are wearing ordinary clothing (t-shirt/suit/shirt). Do NOT blur!
-            val onlyWeakCoveredChest = c.faces.isNotEmpty() &&
-                    c.upper.isNotEmpty() &&
-                    c.upper.all { it.label == NudeLabel.FEMALE_BREAST_COVERED && it.confidence < 0.25f } &&
-                    c.pelvis.isEmpty() &&
-                    c.belly.isEmpty() &&
-                    c.others.isEmpty() &&
-                    c.upper.none { it.label == NudeLabel.ARMPITS_EXPOSED || it.label == NudeLabel.FEMALE_BREAST_EXPOSED }
+            // A person with a face who has NO exposed intimate skin
+            // (no cleavage/bare breasts, no exposed belly, no exposed buttocks/pelvis, no exposed genitalia)
+            // and NO confirmed swimwear/panties (FEMALE_GENITALIA_COVERED, BUTTOCKS_COVERED):
+            // if their only chest detection is FEMALE_BREAST_COVERED < 0.38f, they are wearing ordinary clothing (shirt/blouse/suit).
+            // Do NOT blur!
+            val hasExposedIntimate = c.intimateDetections.any {
+                it.label == NudeLabel.FEMALE_BREAST_EXPOSED ||
+                it.label == NudeLabel.MALE_BREAST_EXPOSED ||
+                it.label == NudeLabel.BELLY_EXPOSED ||
+                it.label == NudeLabel.BUTTOCKS_EXPOSED ||
+                it.label == NudeLabel.FEMALE_GENITALIA_EXPOSED ||
+                it.label == NudeLabel.MALE_GENITALIA_EXPOSED ||
+                it.label == NudeLabel.FEMALE_GENITALIA_COVERED ||
+                it.label == NudeLabel.BUTTOCKS_COVERED ||
+                (it.label == NudeLabel.ARMPITS_EXPOSED && it.confidence >= 0.25f)
+            }
 
-            if (onlyWeakCoveredChest) {
+            val onlyCoveredChestWithoutExposedSkin = c.faces.isNotEmpty() &&
+                    !hasExposedIntimate &&
+                    c.upper.all { it.label == NudeLabel.FEMALE_BREAST_COVERED && it.confidence < 0.38f }
+
+            if (onlyCoveredChestWithoutExposedSkin) {
                 return@filter false // Discard ordinary shirt/clothing false positive!
             }
 

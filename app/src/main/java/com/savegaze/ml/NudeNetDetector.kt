@@ -182,19 +182,21 @@ class NudeNetDetector(
                 }
             }
 
-            // Calibrate face classification for clean-shaved males with long hair:
+            // Calibrate face classification for clean-shaved males with long hair / sunglasses:
             // NudeLabel indices: FACE_FEMALE is 1, FACE_MALE is 12
             val femaleFaceScore = output[4 + 1][i]
             val maleFaceScore = output[4 + 12][i]
             val isMaleFaceCalibrated = maleFaceScore > femaleFaceScore ||
-                    (maleFaceScore >= 0.22f && maleFaceScore >= femaleFaceScore * 0.72f)
+                    (maleFaceScore >= 0.018f && femaleFaceScore < 0.45f && maleFaceScore >= femaleFaceScore * 0.10f) ||
+                    (maleFaceScore >= 0.030f && maleFaceScore >= femaleFaceScore * 0.06f)
 
             val adjustedBestClassIdx = if (bestClassIdx == 1 && isMaleFaceCalibrated) {
                 12 // classify as FACE_MALE!
             } else {
                 bestClassIdx
             }
-            val finalScore = if (adjustedBestClassIdx != bestClassIdx) maleFaceScore else bestClassScore
+            // Retain the strong face detection score so the male face is never discarded by minThreshold
+            val finalScore = bestClassScore
 
             if (finalScore > globalMaxScore) {
                 globalMaxScore = finalScore
@@ -206,22 +208,25 @@ class NudeNetDetector(
             // Sensitive thresholds for faces and exposed/intimate areas to ensure
             // boobs, breasts, side-profile cleavage, exposed back, exposed belly, and buttocks
             // are reliably detected without dropping subtle angles or side poses.
+            // IMPORTANT: FEMALE_BREAST_COVERED requires high confidence (>= 0.35f) so normal
+            // shirts and t-shirt folds are NEVER falsely detected as bikini tops/bras!
             val minThreshold = when (label) {
                 NudeLabel.FACE_FEMALE,
-                NudeLabel.FACE_MALE,
-                NudeLabel.ARMPITS_EXPOSED -> minOf(confidenceThreshold, 0.16f)
-                NudeLabel.BUTTOCKS_EXPOSED,
-                NudeLabel.BUTTOCKS_COVERED,
-                NudeLabel.BELLY_EXPOSED,
+                NudeLabel.FACE_MALE -> minOf(confidenceThreshold, 0.16f)
+                NudeLabel.ARMPITS_EXPOSED -> minOf(confidenceThreshold, 0.20f)
                 NudeLabel.FEMALE_BREAST_EXPOSED,
-                NudeLabel.FEMALE_BREAST_COVERED,
                 NudeLabel.MALE_BREAST_EXPOSED,
                 NudeLabel.FEMALE_GENITALIA_EXPOSED,
+                NudeLabel.MALE_GENITALIA_EXPOSED,
+                NudeLabel.BUTTOCKS_EXPOSED -> minOf(confidenceThreshold, 0.14f)
+                NudeLabel.BUTTOCKS_COVERED,
                 NudeLabel.FEMALE_GENITALIA_COVERED,
-                NudeLabel.FEET_EXPOSED -> minOf(confidenceThreshold, 0.14f)
+                NudeLabel.BELLY_EXPOSED,
+                NudeLabel.FEET_EXPOSED -> minOf(confidenceThreshold, 0.18f)
+                NudeLabel.FEMALE_BREAST_COVERED -> maxOf(confidenceThreshold, 0.35f)
                 else -> confidenceThreshold
             }
-            if (bestClassScore < minThreshold) continue
+            if (finalScore < minThreshold) continue
 
             val (padW, padH) = getLabelPadding(label, w, h)
 
@@ -472,18 +477,28 @@ class NudeNetDetector(
             }
 
             // Normal Clothed Person False-Positive Filter:
-            // If a person has a face, but their only intimate detection is a weak FEMALE_BREAST_COVERED (< 0.25f),
-            // and they have NO exposed skin (no cleavage, no exposed armpits/back, no exposed belly, no pelvis):
-            // they are wearing ordinary clothing (t-shirt/suit/shirt). Do NOT blur!
-            val onlyWeakCoveredChest = c.faces.isNotEmpty() &&
-                    c.upper.isNotEmpty() &&
-                    c.upper.all { it.label == NudeLabel.FEMALE_BREAST_COVERED && it.confidence < 0.25f } &&
-                    c.pelvis.isEmpty() &&
-                    c.belly.isEmpty() &&
-                    c.others.isEmpty() &&
-                    c.upper.none { it.label == NudeLabel.ARMPITS_EXPOSED || it.label == NudeLabel.FEMALE_BREAST_EXPOSED }
+            // A person with a face who has NO exposed intimate skin
+            // (no cleavage/bare breasts, no exposed belly, no exposed buttocks/pelvis, no exposed genitalia)
+            // and NO confirmed swimwear/panties (FEMALE_GENITALIA_COVERED, BUTTOCKS_COVERED):
+            // if their only chest detection is FEMALE_BREAST_COVERED < 0.38f, they are wearing ordinary clothing (shirt/blouse/suit).
+            // Do NOT blur!
+            val hasExposedIntimate = c.intimateDetections.any {
+                it.label == NudeLabel.FEMALE_BREAST_EXPOSED ||
+                it.label == NudeLabel.MALE_BREAST_EXPOSED ||
+                it.label == NudeLabel.BELLY_EXPOSED ||
+                it.label == NudeLabel.BUTTOCKS_EXPOSED ||
+                it.label == NudeLabel.FEMALE_GENITALIA_EXPOSED ||
+                it.label == NudeLabel.MALE_GENITALIA_EXPOSED ||
+                it.label == NudeLabel.FEMALE_GENITALIA_COVERED ||
+                it.label == NudeLabel.BUTTOCKS_COVERED ||
+                (it.label == NudeLabel.ARMPITS_EXPOSED && it.confidence >= 0.25f)
+            }
 
-            if (onlyWeakCoveredChest) {
+            val onlyCoveredChestWithoutExposedSkin = c.faces.isNotEmpty() &&
+                    !hasExposedIntimate &&
+                    c.upper.all { it.label == NudeLabel.FEMALE_BREAST_COVERED && it.confidence < 0.38f }
+
+            if (onlyCoveredChestWithoutExposedSkin) {
                 return@filter false // Discard ordinary shirt/clothing false positive!
             }
 
