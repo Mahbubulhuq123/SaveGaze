@@ -228,3 +228,59 @@ fun stackBlur(pixels: IntArray, width: Int, height: Int, radius: Int) {
                 b[i].coerceIn(0, 255)
     }
 }
+
+/**
+ * Checks whether a candidate bounding box contains a minimum proportion of human skin chrominance.
+ * Used to reject inanimate objects (wood carvings, furniture, pillows, vegetables/onions, wallpaper, plain fabrics).
+ */
+fun Bitmap.hasHumanSkin(box: BoundingBox, minFraction: Float = 0.08f): Boolean {
+    val bWidth = this.width
+    val bHeight = this.height
+    val left = box.x1.toInt().coerceIn(0, bWidth - 1)
+    val top = box.y1.toInt().coerceIn(0, bHeight - 1)
+    val right = box.x2.toInt().coerceIn(left + 1, bWidth)
+    val bottom = box.y2.toInt().coerceIn(top + 1, bHeight)
+
+    val regionW = right - left
+    val regionH = bottom - top
+    if (regionW < 4 || regionH < 4) return false
+
+    // Sample a grid of up to 12x12 points across the box
+    val stepX = maxOf(1, regionW / 12)
+    val stepY = maxOf(1, regionH / 12)
+
+    var skinCount = 0
+    var totalSampled = 0
+
+    var y = top
+    while (y < bottom) {
+        var x = left
+        while (x < right) {
+            val pixel = this.getPixel(x, y)
+            val r = (pixel shr 16) and 0xFF
+            val g = (pixel shr 8) and 0xFF
+            val b = pixel and 0xFF
+
+            // YCbCr skin formula:
+            // Cb = -0.1687 * R - 0.3313 * G + 0.5000 * B + 128
+            // Cr =  0.5000 * R - 0.4187 * G - 0.0813 * B + 128
+            val cb = (-0.1687f * r - 0.3313f * g + 0.5000f * b + 128f).toInt()
+            val cr = (0.5000f * r - 0.4187f * g - 0.0813f * b + 128f).toInt()
+
+            // Standard broad human skin cluster (fair to very deep tones):
+            val isSkin = (r > 40 && g > 25 && b > 15) &&
+                    (r > g && r > b) &&
+                    (cb in 70..138) &&
+                    (cr in 128..178)
+
+            if (isSkin) skinCount++
+            totalSampled++
+            x += stepX
+        }
+        y += stepY
+    }
+
+    if (totalSampled == 0) return false
+    return (skinCount.toFloat() / totalSampled.toFloat()) >= minFraction
+}
+

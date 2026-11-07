@@ -499,7 +499,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
             val matchingGenderFaces = when (genderFilter) {
                 GenderFilter.BOTH -> filtered.faces
-                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE }
+                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE && it.confidence >= 0.26f }
                 GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_MALE }
             }
 
@@ -599,10 +599,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 oppositeFaces.any { opp ->
                     val bodyTop = opp.box.y1 - 20f
                     val bodyBottom = opp.box.y2 + opp.box.height * 6.0f
-                    val colLeft = opp.box.centerX - opp.box.width * 1.4f
-                    val colRight = opp.box.centerX + opp.box.width * 1.4f
+                    val colLeft = opp.box.centerX - opp.box.width * 1.5f
+                    val colRight = opp.box.centerX + opp.box.width * 1.5f
                     val hasCloserMatchingFace = matchingFaces.any { mf ->
-                        kotlin.math.abs(mf.box.centerX - tracked.box.centerX) < kotlin.math.abs(opp.box.centerX - tracked.box.centerX)
+                        val distMatching = kotlin.math.hypot(mf.box.centerX - tracked.box.centerX, (mf.box.y2 - tracked.box.y1).coerceAtLeast(0f))
+                        val distOpp = kotlin.math.hypot(opp.box.centerX - tracked.box.centerX, (opp.box.y2 - tracked.box.y1).coerceAtLeast(0f))
+                        distMatching < distOpp
                     }
                     !hasCloserMatchingFace &&
                     tracked.box.centerY in bodyTop..bodyBottom &&
@@ -728,7 +730,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
         }
 
-        val holdTimeMs = if (didScroll) 450L else 1400L
+        val hasVisibleMatchingFace = matchingFaces.isNotEmpty()
+        val holdTimeMs = if (didScroll) 300L else if (hasVisibleMatchingFace) 750L else 350L
         trackedBoxes.removeAll { now - it.lastSeenMs > holdTimeMs }
 
         return trackedBoxes.map { it.box }
