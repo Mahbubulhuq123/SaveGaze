@@ -528,25 +528,36 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE }
             }
 
-            // In FEMALE_ONLY mode, strictly purge any candidate box that touches or lies under a male face!
-            // (Resolves Kushal Tanwar, Sohan, Javed Ali in Female-Only mode)
+            // In FEMALE_ONLY mode, only purge candidate boxes under a confirmed male face when no female face is closer!
             if (genderFilter == GenderFilter.FEMALE_ONLY && oppositeGenderFaces.isNotEmpty()) {
                 candidateBoxes.removeAll { cand ->
                     oppositeGenderFaces.any { maleFace ->
-                        cand.iou(maleFace.box) > 0.02f ||
-                        (cand.centerX in (maleFace.box.x1 - maleFace.box.width * 1.5f)..(maleFace.box.x2 + maleFace.box.width * 1.5f) &&
-                         cand.centerY in (maleFace.box.y1 - 10f)..(maleFace.box.y2 + maleFace.box.height * 7.0f))
+                        val touchesMaleFace = cand.iou(maleFace.box) > 0.10f
+                        val isUnderMale = (cand.centerX in (maleFace.box.x1 - maleFace.box.width * 0.8f)..(maleFace.box.x2 + maleFace.box.width * 0.8f) &&
+                                cand.centerY in (maleFace.box.y1)..(maleFace.box.y2 + maleFace.box.height * 4.5f))
+                        val closerToFemale = matchingGenderFaces.any { femaleFace ->
+                            val distF = kotlin.math.hypot(femaleFace.box.centerX - cand.centerX, femaleFace.box.y2 - cand.y1)
+                            val distM = kotlin.math.hypot(maleFace.box.centerX - cand.centerX, maleFace.box.y2 - cand.y1)
+                            distF < distM
+                        }
+                        touchesMaleFace || (isUnderMale && !closerToFemale)
                     }
                 }
             }
 
-            // In MALE_ONLY mode, strictly purge any candidate box that touches or lies under a female face!
+            // In MALE_ONLY mode, only purge candidate boxes under a confirmed female face when no male face is closer!
             if (genderFilter == GenderFilter.MALE_ONLY && oppositeGenderFaces.isNotEmpty()) {
                 candidateBoxes.removeAll { cand ->
                     oppositeGenderFaces.any { femaleFace ->
-                        cand.iou(femaleFace.box) > 0.02f ||
-                        (cand.centerX in (femaleFace.box.x1 - femaleFace.box.width * 1.5f)..(femaleFace.box.x2 + femaleFace.box.width * 1.5f) &&
-                         cand.centerY in (femaleFace.box.y1 - 10f)..(femaleFace.box.y2 + femaleFace.box.height * 7.0f))
+                        val touchesFemaleFace = cand.iou(femaleFace.box) > 0.10f
+                        val isUnderFemale = (cand.centerX in (femaleFace.box.x1 - femaleFace.box.width * 0.8f)..(femaleFace.box.x2 + femaleFace.box.width * 0.8f) &&
+                                cand.centerY in (femaleFace.box.y1)..(femaleFace.box.y2 + femaleFace.box.height * 4.5f))
+                        val closerToMale = matchingGenderFaces.any { maleFace ->
+                            val distM = kotlin.math.hypot(maleFace.box.centerX - cand.centerX, maleFace.box.y2 - cand.y1)
+                            val distF = kotlin.math.hypot(femaleFace.box.centerX - cand.centerX, femaleFace.box.y2 - cand.y1)
+                            distM < distF
+                        }
+                        touchesFemaleFace || (isUnderFemale && !closerToMale)
                     }
                 }
             }
@@ -639,13 +650,11 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         if (oppositeFaces.isNotEmpty()) {
             trackedBoxes.removeAll { tracked ->
                 oppositeFaces.any { opp ->
-                    val touchesFace = tracked.box.iou(opp.box) > 0.02f ||
-                            (tracked.box.centerX in (opp.box.x1 - 10f)..(opp.box.x2 + 10f) &&
-                             tracked.box.centerY in (opp.box.y1 - 10f)..(opp.box.y2 + 10f))
-                    val bodyTop = opp.box.y1 - 20f
-                    val bodyBottom = opp.box.y2 + opp.box.height * 7.0f
-                    val colLeft = opp.box.centerX - opp.box.width * 1.6f
-                    val colRight = opp.box.centerX + opp.box.width * 1.6f
+                    val touchesFace = tracked.box.iou(opp.box) > 0.08f
+                    val bodyTop = opp.box.y1
+                    val bodyBottom = opp.box.y2 + opp.box.height * 5.0f
+                    val colLeft = opp.box.centerX - opp.box.width * 1.0f
+                    val colRight = opp.box.centerX + opp.box.width * 1.0f
                     val underOppFace = tracked.box.centerY in bodyTop..bodyBottom &&
                             tracked.box.centerX in colLeft..colRight
                     val hasCloserMatchingFace = matchingFaces.any { mf ->
