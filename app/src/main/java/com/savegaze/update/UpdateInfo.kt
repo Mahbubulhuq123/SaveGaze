@@ -21,32 +21,28 @@ data class UpdateInfo(
             remoteCode: Int = 0,
             currentCode: Int = 0
         ): Boolean {
-            // If both version codes are positive, prioritize version code
-            if (remoteCode > 0 && currentCode > 0) {
-                return remoteCode > currentCode
-            }
-
-            // Semantic version name comparison: "v1.2.0" -> [1, 2, 0]
+            // 1. Semantic version name comparison: "1.2" vs "1.0"
             val cleanRemote = remoteVersion.trim().removePrefix("v").removePrefix("V")
             val cleanCurrent = currentVersion.trim().removePrefix("v").removePrefix("V")
 
-            if (cleanRemote.isBlank() || cleanCurrent.isBlank()) {
-                return false
+            if (cleanRemote.isNotBlank() && cleanCurrent.isNotBlank()) {
+                val remoteParts = cleanRemote.split("-", "+")[0].split(".").mapNotNull { it.toIntOrNull() }
+                val currentParts = cleanCurrent.split("-", "+")[0].split(".").mapNotNull { it.toIntOrNull() }
+
+                if (remoteParts.isNotEmpty() && currentParts.isNotEmpty()) {
+                    val maxLen = maxOf(remoteParts.size, currentParts.size)
+                    for (i in 0 until maxLen) {
+                        val r = remoteParts.getOrElse(i) { 0 }
+                        val c = currentParts.getOrElse(i) { 0 }
+                        if (r > c) return true
+                        if (r < c) return false
+                    }
+                }
             }
 
-            val remoteParts = cleanRemote.split("-", "+")[0].split(".").mapNotNull { it.toIntOrNull() }
-            val currentParts = cleanCurrent.split("-", "+")[0].split(".").mapNotNull { it.toIntOrNull() }
-
-            if (remoteParts.isEmpty() || currentParts.isEmpty()) {
-                return cleanRemote != cleanCurrent
-            }
-
-            val maxLen = maxOf(remoteParts.size, currentParts.size)
-            for (i in 0 until maxLen) {
-                val r = remoteParts.getOrElse(i) { 0 }
-                val c = currentParts.getOrElse(i) { 0 }
-                if (r > c) return true
-                if (r < c) return false
+            // 2. Fallback: If version names are identical or non-semantic, compare version codes
+            if (remoteCode > 0 && currentCode > 0) {
+                return remoteCode > currentCode
             }
 
             return false
