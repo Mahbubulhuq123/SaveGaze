@@ -233,7 +233,11 @@ fun stackBlur(pixels: IntArray, width: Int, height: Int, radius: Int) {
  * Checks whether a candidate bounding box contains a minimum proportion of human skin chrominance.
  * Used to reject inanimate objects (wood carvings, furniture, pillows, vegetables/onions, wallpaper, plain fabrics).
  */
-fun Bitmap.hasHumanSkin(box: BoundingBox, minFraction: Float = 0.08f): Boolean {
+fun Bitmap.hasHumanSkin(
+    box: BoundingBox,
+    minFraction: Float = 0.08f,
+    hasNearFace: Boolean = false
+): Boolean {
     val bWidth = this.width
     val bHeight = this.height
     val left = box.x1.toInt().coerceIn(0, bWidth - 1)
@@ -245,11 +249,12 @@ fun Bitmap.hasHumanSkin(box: BoundingBox, minFraction: Float = 0.08f): Boolean {
     val regionH = bottom - top
     if (regionW < 4 || regionH < 4) return false
 
-    // Sample a grid of up to 12x12 points across the box
-    val stepX = maxOf(1, regionW / 12)
-    val stepY = maxOf(1, regionH / 12)
+    // Sample a grid of up to 14x14 points across the box
+    val stepX = maxOf(1, regionW / 14)
+    val stepY = maxOf(1, regionH / 14)
 
     var skinCount = 0
+    var onionCount = 0
     var totalSampled = 0
 
     var y = top
@@ -261,19 +266,30 @@ fun Bitmap.hasHumanSkin(box: BoundingBox, minFraction: Float = 0.08f): Boolean {
             val g = (pixel shr 8) and 0xFF
             val b = pixel and 0xFF
 
+            // Detect raw red/purple vegetable skins (e.g. red onions, beets):
+            // Red onions have hyper-saturated magenta/dark-red hue where R is high but G and B are deeply suppressed.
+            val isRedOnion = (r in 110..220) && (g in 20..85) && (b in 20..95) && ((r - g) > 65)
+            if (isRedOnion) onionCount++
+
             // YCbCr skin formula:
-            // Cb = -0.1687 * R - 0.3313 * G + 0.5000 * B + 128
-            // Cr =  0.5000 * R - 0.4187 * G - 0.0813 * B + 128
             val cb = (-0.1687f * r - 0.3313f * g + 0.5000f * b + 128f).toInt()
             val cr = (0.5000f * r - 0.4187f * g - 0.0813f * b + 128f).toInt()
 
-            // Standard broad human skin cluster (fair to very deep tones):
-            val isSkin = (r > 40 && g > 25 && b > 15) &&
-                    (r > g && r > b) &&
-                    (cb in 70..138) &&
-                    (cr in 128..178)
+            // 1. Standard warm human skin cluster (fair, olive, tan, south-asian, deep skin)
+            val isWarmSkin = (r > 40 && g > 25 && b > 15) &&
+                    (r > g && (r > b || (g - b) in -15..30)) &&
+                    (cb in 68..142) &&
+                    (cr in 126..180)
 
-            if (isSkin) skinCount++
+            // 2. Cool / neon / club / car ambient lighting skin (e.g. music videos, blue/cyan backlight)
+            val isCoolSkin = (r > 35 && g > 25 && b > 25) &&
+                    (cb in 75..165) &&
+                    (cr in 115..172) &&
+                    (r >= g * 0.80f)
+
+            if (!isRedOnion && (isWarmSkin || isCoolSkin)) {
+                skinCount++
+            }
             totalSampled++
             x += stepX
         }
@@ -281,6 +297,14 @@ fun Bitmap.hasHumanSkin(box: BoundingBox, minFraction: Float = 0.08f): Boolean {
     }
 
     if (totalSampled == 0) return false
-    return (skinCount.toFloat() / totalSampled.toFloat()) >= minFraction
+
+    // If more than 20% of the sample points are red onion peel and no face is attached, reject as onion!
+    if (onionCount.toFloat() / totalSampled.toFloat() > 0.20f && !hasNearFace) {
+        return false
+    }
+
+    val skinFraction = skinCount.toFloat() / totalSampled.toFloat()
+    val requiredFraction = if (hasNearFace) 0.04f else minFraction
+    return skinFraction >= requiredFraction
 }
 

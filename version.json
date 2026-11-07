@@ -1,8 +1,8 @@
 {
-  "versionCode": 10200,
-  "versionName": "1.2",
-  "publishedAt": "2026-11-07T12:00:00Z",
-  "releaseNotes": "• Multi-scale dual-tile scanning to detect small thumbnail cleavage, bare back, and legs without distortion\n• Human skin chrominance verification eliminating false positives on pillows, onions, and furniture\n• Strict gender separation and split-screen vertical isolation (male faces/bodies protected in Female-Only mode)\n• Functional Full-Body Blur mode covering from chin/neck down to feet",
+  "versionCode": 10300,
+  "versionName": "1.3",
+  "publishedAt": "2026-11-07T13:30:00Z",
+  "releaseNotes": "• True Full-Body Blur: Anatomical expansion from chin down past feet and across full shoulder width\n• Enhanced modesty coverage: 3-tile scanning for small thumbnail feeds and side-profile saree/backless expansion\n• False positive elimination: Strict rejection of raw red onions, pillows, and wooden textures\n• Gender shielding: Guaranteed protection of male faces and torsos in Female-Only mode",
   "downloadUrl": "https://raw.githubusercontent.com/Mahbubulhuq123/SaveGaze/main/release/SaveGaze-arm64-v8a.apk",
   "apkSize": 75375505
 }

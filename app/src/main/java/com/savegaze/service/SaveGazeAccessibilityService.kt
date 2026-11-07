@@ -111,6 +111,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private var activeFaceBoxes: List<BoundingBox> = emptyList()
     private var lastScreenSignature: IntArray? = null
     private var lastGenderFilter: GenderFilter? = null
+    private var currentBlurFullBody: Boolean = false
     private var userJustScrolled = false
     private var lastScrollTimestamp = 0L
     private var lastScreenIsStatic = false
@@ -169,6 +170,20 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         serviceScope.launch {
             preferencesManager?.blurFacesFlow?.collect { blurFaces ->
                 overlayManager?.setBlurFaces(blurFaces)
+            }
+        }
+        serviceScope.launch {
+            preferencesManager?.blurFullBodyFlow?.collect { fullBody ->
+                if (currentBlurFullBody != fullBody) {
+                    currentBlurFullBody = fullBody
+                    trackedBoxes.clear()
+                    activeBlurBoxes = emptyList()
+                    activeFaceBoxes = emptyList()
+                    overlayManager?.clearBlurRegions()
+                    if (preferencesManager?.getIsEnabled() == true && detector != null) {
+                        performScan()
+                    }
+                }
             }
         }
         serviceScope.launch {
@@ -480,8 +495,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
             lastGenderFilter = genderFilter
 
-            val shouldBlurFullBody = preferencesManager?.getBlurFullBody() ?: false
-            val filtered = currentDetector.filterDetections(detections, genderFilter, shouldBlurFullBody)
+            val filtered = currentDetector.filterDetections(detections, genderFilter, currentBlurFullBody)
 
             val allExcluded = activeBlurBoxes + trackedBoxes.map { it.box }
             val currentSignature = computeScreenSignature(bitmap, allExcluded)
@@ -499,7 +513,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
             val matchingGenderFaces = when (genderFilter) {
                 GenderFilter.BOTH -> filtered.faces
-                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE && it.confidence >= 0.26f }
+                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE && it.confidence >= 0.20f }
                 GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_MALE }
             }
 
@@ -507,6 +521,18 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 GenderFilter.BOTH -> emptyList()
                 GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_MALE }
                 GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE }
+            }
+
+            // In FEMALE_ONLY mode, strictly purge any candidate box that touches or overlaps a male face!
+            // (Resolves Javed Ali & male face blur in Cases 8 and 9)
+            if (genderFilter == GenderFilter.FEMALE_ONLY && oppositeGenderFaces.isNotEmpty()) {
+                candidateBoxes.removeAll { cand ->
+                    oppositeGenderFaces.any { maleFace ->
+                        cand.iou(maleFace.box) > 0.05f ||
+                        (cand.centerX in (maleFace.box.x1 - 10f)..(maleFace.box.x2 + 10f) &&
+                         cand.centerY in (maleFace.box.y1 - 10f)..(maleFace.box.y2 + 10f))
+                    }
+                }
             }
 
             if (shouldBlurFaces && matchingGenderFaces.isNotEmpty()) {
@@ -592,23 +618,26 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         isSceneCut: Boolean,
         didScroll: Boolean
     ): List<BoundingBox> {
-        // 1. Immediately invalidate any tracked box that lies beneath an opposite-gender face
-        // (e.g., if a male face is detected in FEMALE_ONLY mode, never keep a blur box under him!)
+        // 1. Immediately invalidate any tracked box that lies beneath or directly overlaps an opposite-gender face
+        // (e.g., if a male face is detected in FEMALE_ONLY mode, never keep a blur box on or under him!)
         if (oppositeFaces.isNotEmpty()) {
             trackedBoxes.removeAll { tracked ->
                 oppositeFaces.any { opp ->
+                    val touchesFace = tracked.box.iou(opp.box) > 0.05f ||
+                            (tracked.box.centerX in (opp.box.x1 - 10f)..(opp.box.x2 + 10f) &&
+                             tracked.box.centerY in (opp.box.y1 - 10f)..(opp.box.y2 + 10f))
                     val bodyTop = opp.box.y1 - 20f
                     val bodyBottom = opp.box.y2 + opp.box.height * 6.0f
                     val colLeft = opp.box.centerX - opp.box.width * 1.5f
                     val colRight = opp.box.centerX + opp.box.width * 1.5f
+                    val underOppFace = tracked.box.centerY in bodyTop..bodyBottom &&
+                            tracked.box.centerX in colLeft..colRight
                     val hasCloserMatchingFace = matchingFaces.any { mf ->
                         val distMatching = kotlin.math.hypot(mf.box.centerX - tracked.box.centerX, (mf.box.y2 - tracked.box.y1).coerceAtLeast(0f))
                         val distOpp = kotlin.math.hypot(opp.box.centerX - tracked.box.centerX, (opp.box.y2 - tracked.box.y1).coerceAtLeast(0f))
                         distMatching < distOpp
                     }
-                    !hasCloserMatchingFace &&
-                    tracked.box.centerY in bodyTop..bodyBottom &&
-                    tracked.box.centerX in colLeft..colRight
+                    touchesFace || (!hasCloserMatchingFace && underOppFace)
                 }
             }
         }
