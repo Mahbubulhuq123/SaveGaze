@@ -1,8 +1,8 @@
 {
-  "versionCode": 10400,
-  "versionName": "1.4",
-  "publishedAt": "2026-11-07T15:15:00Z",
-  "releaseNotes": "• Strict Female-Only Filtering: Only blurs exposed body parts (breasts, cleavage/swimwear, bare midriff, exposed thighs/legs). Fully-clothed men (shirts, polos) and clothed women are never blurred.\n• Strict Male-Only Filtering: Only blurs males who are shirtless or wearing shorts. Fully-clothed men in shirts/polos/jackets are never blurred.\n• Media Container Boundary Containment: Full-body and targeted blur boxes are strictly confined within image and video cards, never overflowing onto search UI, buttons ('Visit', 'Save'), or adjacent images.\n• Full-Body Shielding: Accurately shields from neck down to feet or container boundary while preserving face.\n• Face Blurring Control: Blurs face from jaw to forehead when enabled; guarantees complete facial clarity and protection when disabled.\n• Pure Solid Black Overlay: Eliminated hollow ghost stroke frames around chins.\n• Signed Release: Digitally signed package resolving 'App not installed' error.",
+  "versionCode": 10500,
+  "versionName": "1.5",
+  "publishedAt": "2026-11-07T16:50:00Z",
+  "releaseNotes": "• Fix Male-Only Blurring: Reliably detects and blurs shirtless men (bare chest, belly, armpits) and men wearing shorts/speedos while preserving fully-clothed men.\n• Eliminate Blinking & Flickering: Rebuilt tracking retention with self-occlusion locking so toggling full-body and face blurring produces a stable, non-blinking shield.\n• Complete Neck & Cleavage Coverage: Targeted blurring now extends seamlessly up to the jawline/neck whenever breast/cleavage is exposed up to the neck.\n• Exposed Backside Blurring: Fully blurs exposed buttocks, covered swimwear buttocks, and exposed female backlines.\n• Signed Release: v1.5 digitally signed and installable directly over v1.4.",
   "downloadUrl": "https://raw.githubusercontent.com/Mahbubulhuq123/SaveGaze/main/release/SaveGaze-arm64-v8a.apk",
-  "apkSize": 59238551
+  "apkSize": 59243095
 }

@@ -587,8 +587,11 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 userJustScrolled = false
             }
 
+            // Merge contiguous and overlapping candidate boxes (such as continuous face + torso shields)
+            val unifiedCandidateBoxes = currentDetector.mergeAdjacentBoxes(candidateBoxes)
+
             val boxesToApply = updateTrackedBoxes(
-                candidateBoxes = candidateBoxes,
+                candidateBoxes = unifiedCandidateBoxes,
                 matchingFaces = matchingGenderFaces,
                 oppositeFaces = oppositeGenderFaces,
                 screenW = bWidth,
@@ -596,7 +599,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 now = now,
                 isStaticScreen = lastScreenIsStatic,
                 isSceneCut = isSceneCut,
-                didScroll = userJustScrolled
+                didScroll = userJustScrolled,
+                shouldBlurFaces = shouldBlurFaces
             )
 
             val protectionEnabled = preferencesManager?.getIsEnabled() ?: true
@@ -643,7 +647,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         now: Long,
         isStaticScreen: Boolean,
         isSceneCut: Boolean,
-        didScroll: Boolean
+        didScroll: Boolean,
+        shouldBlurFaces: Boolean = false
     ): List<BoundingBox> {
         // 1. Immediately invalidate any tracked box that lies beneath or directly overlaps an opposite-gender face
         // (e.g., if a male face is detected in FEMALE_ONLY mode, never keep a blur box on or under him!)
@@ -668,8 +673,26 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         }
 
         if (candidateBoxes.isEmpty() && matchingFaces.isEmpty()) {
-            trackedBoxes.clear()
-            return emptyList()
+            if (didScroll || isSceneCut) {
+                userJustScrolled = false
+                trackedBoxes.clear()
+                return emptyList()
+            }
+
+            // Self-Occlusion Hold: When full-body or face blur is active, the blur overlay itself covers
+            // the subject, preventing model re-detections on subsequent frames.
+            // On a static screen with active blur, lock the tracked boxes indefinitely so they NEVER flicker.
+            if (isStaticScreen && oppositeFaces.isEmpty() && trackedBoxes.isNotEmpty()) {
+                for (tracked in trackedBoxes) {
+                    tracked.lastSeenMs = now
+                }
+                return trackedBoxes.map { it.box }
+            }
+
+            // In video, hold tracked boxes before expiring, preventing flicker between frames
+            val holdTimeMs = if (isStaticScreen) 2500L else 900L
+            trackedBoxes.removeAll { now - it.lastSeenMs > holdTimeMs }
+            return trackedBoxes.map { it.box }
         }
 
         if (didScroll && candidateBoxes.isEmpty()) {
@@ -790,7 +813,11 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         }
 
         val hasVisibleMatchingFace = matchingFaces.isNotEmpty()
-        val holdTimeMs = if (didScroll) 300L else if (hasVisibleMatchingFace) 750L else 350L
+        val hasActiveBlur = trackedBoxes.isNotEmpty()
+        val holdTimeMs = if (didScroll) 250L
+            else if (isStaticScreen) 2500L
+            else if (hasVisibleMatchingFace || (hasActiveBlur && shouldBlurFaces)) 1000L
+            else 600L
         trackedBoxes.removeAll { now - it.lastSeenMs > holdTimeMs }
 
         return trackedBoxes.map { it.box }

@@ -17,7 +17,7 @@ def getGitVersionName = { ->
             return tag.replaceFirst('^[vV]', '')
         }
     } catch (Exception ignored) {}
-    return "1.0"
+    return "1.5"
 }
 
 def getGitVersionCode = { String verName ->
