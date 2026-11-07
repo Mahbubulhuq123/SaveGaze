@@ -495,7 +495,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
             lastGenderFilter = genderFilter
 
-            val filtered = currentDetector.filterDetections(detections, genderFilter, currentBlurFullBody)
+            val filtered = currentDetector.filterDetections(
+                detections = detections,
+                genderFilter = genderFilter,
+                blurFullBody = currentBlurFullBody,
+                bitmap = bitmap
+            )
 
             val allExcluded = activeBlurBoxes + trackedBoxes.map { it.box }
             val currentSignature = computeScreenSignature(bitmap, allExcluded)
@@ -513,7 +518,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
             val matchingGenderFaces = when (genderFilter) {
                 GenderFilter.BOTH -> filtered.faces
-                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE && it.confidence >= 0.20f }
+                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE && it.confidence >= 0.18f }
                 GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_MALE }
             }
 
@@ -523,14 +528,25 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE }
             }
 
-            // In FEMALE_ONLY mode, strictly purge any candidate box that touches or overlaps a male face!
-            // (Resolves Javed Ali & male face blur in Cases 8 and 9)
+            // In FEMALE_ONLY mode, strictly purge any candidate box that touches or lies under a male face!
+            // (Resolves Kushal Tanwar, Sohan, Javed Ali in Female-Only mode)
             if (genderFilter == GenderFilter.FEMALE_ONLY && oppositeGenderFaces.isNotEmpty()) {
                 candidateBoxes.removeAll { cand ->
                     oppositeGenderFaces.any { maleFace ->
-                        cand.iou(maleFace.box) > 0.05f ||
-                        (cand.centerX in (maleFace.box.x1 - 10f)..(maleFace.box.x2 + 10f) &&
-                         cand.centerY in (maleFace.box.y1 - 10f)..(maleFace.box.y2 + 10f))
+                        cand.iou(maleFace.box) > 0.02f ||
+                        (cand.centerX in (maleFace.box.x1 - maleFace.box.width * 1.5f)..(maleFace.box.x2 + maleFace.box.width * 1.5f) &&
+                         cand.centerY in (maleFace.box.y1 - 10f)..(maleFace.box.y2 + maleFace.box.height * 7.0f))
+                    }
+                }
+            }
+
+            // In MALE_ONLY mode, strictly purge any candidate box that touches or lies under a female face!
+            if (genderFilter == GenderFilter.MALE_ONLY && oppositeGenderFaces.isNotEmpty()) {
+                candidateBoxes.removeAll { cand ->
+                    oppositeGenderFaces.any { femaleFace ->
+                        cand.iou(femaleFace.box) > 0.02f ||
+                        (cand.centerX in (femaleFace.box.x1 - femaleFace.box.width * 1.5f)..(femaleFace.box.x2 + femaleFace.box.width * 1.5f) &&
+                         cand.centerY in (femaleFace.box.y1 - 10f)..(femaleFace.box.y2 + femaleFace.box.height * 7.0f))
                     }
                 }
             }
@@ -540,10 +556,10 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     val fw = face.box.width
                     val fh = face.box.height
                     candidateBoxes.add(BoundingBox(
-                        x1 = (face.box.x1 - fw * 0.10f).coerceAtLeast(0f),
-                        y1 = (face.box.y1 - fh * 0.10f).coerceAtLeast(0f),
-                        x2 = (face.box.x2 + fw * 0.10f).coerceAtMost(bWidth),
-                        y2 = (face.box.y2 + fh * 0.10f).coerceAtMost(bHeight)
+                        x1 = (face.box.x1 - fw * 0.05f).coerceAtLeast(0f),
+                        y1 = (face.box.y1 - fh * 0.05f).coerceAtLeast(0f),
+                        x2 = (face.box.x2 + fw * 0.05f).coerceAtMost(bWidth),
+                        y2 = (face.box.y2 + fh * 0.05f).coerceAtMost(bHeight)
                     ))
                 }
             }
@@ -623,13 +639,13 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         if (oppositeFaces.isNotEmpty()) {
             trackedBoxes.removeAll { tracked ->
                 oppositeFaces.any { opp ->
-                    val touchesFace = tracked.box.iou(opp.box) > 0.05f ||
+                    val touchesFace = tracked.box.iou(opp.box) > 0.02f ||
                             (tracked.box.centerX in (opp.box.x1 - 10f)..(opp.box.x2 + 10f) &&
                              tracked.box.centerY in (opp.box.y1 - 10f)..(opp.box.y2 + 10f))
                     val bodyTop = opp.box.y1 - 20f
-                    val bodyBottom = opp.box.y2 + opp.box.height * 6.0f
-                    val colLeft = opp.box.centerX - opp.box.width * 1.5f
-                    val colRight = opp.box.centerX + opp.box.width * 1.5f
+                    val bodyBottom = opp.box.y2 + opp.box.height * 7.0f
+                    val colLeft = opp.box.centerX - opp.box.width * 1.6f
+                    val colRight = opp.box.centerX + opp.box.width * 1.6f
                     val underOppFace = tracked.box.centerY in bodyTop..bodyBottom &&
                             tracked.box.centerX in colLeft..colRight
                     val hasCloserMatchingFace = matchingFaces.any { mf ->
@@ -640,6 +656,11 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     touchesFace || (!hasCloserMatchingFace && underOppFace)
                 }
             }
+        }
+
+        if (candidateBoxes.isEmpty() && matchingFaces.isEmpty()) {
+            trackedBoxes.clear()
+            return emptyList()
         }
 
         if (didScroll && candidateBoxes.isEmpty()) {

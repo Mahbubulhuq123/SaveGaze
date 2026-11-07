@@ -203,9 +203,10 @@ class OverlayManager(private val context: Context) {
             val alpha = (currentOpacity * 255 / 100).coerceIn(0, 255)
             when (currentStyle) {
                 BlurStyle.SOLID_BLACK -> {
-                    // 100% Solid Pitch Black — HaramBlur style: completely opaque, zero transparency
+                    // 100% Solid Pitch Black — HaramBlur style: completely opaque, zero transparency, no stroke rims
                     fillPaint.color = Color.argb(alpha, 0, 0, 0)
-                    borderPaint.color = Color.argb((alpha * 0.45f).toInt(), 50, 50, 50)
+                    borderPaint.color = Color.TRANSPARENT
+                    borderPaint.strokeWidth = 0f
                     frostPaint.color = Color.TRANSPARENT
                 }
                 BlurStyle.DARK_FROSTED -> {
@@ -256,8 +257,7 @@ class OverlayManager(private val context: Context) {
                     val fLeft = (if (face.x1 <= 1.0f && face.x2 <= 1.0f) face.x1 * viewWidth else face.x1) - 4f
                     val fTop = (if (face.y1 <= 1.0f && face.y2 <= 1.0f) face.y1 * viewHeight else face.y1) - 4f
                     val fRight = (if (face.x1 <= 1.0f && face.x2 <= 1.0f) face.x2 * viewWidth else face.x2) + 4f
-                    val actualFaceH = if (face.y1 <= 1.0f && face.y2 <= 1.0f) face.height * viewHeight else face.height
-                    val fBottom = (if (face.y1 <= 1.0f && face.y2 <= 1.0f) face.y2 * viewHeight else face.y2) - minOf(actualFaceH * 0.08f, 12f)
+                    val fBottom = if (face.y1 <= 1.0f && face.y2 <= 1.0f) face.y2 * viewHeight else face.y2
                     canvas.clipOutRect(
                         fLeft.coerceAtLeast(0f),
                         fTop.coerceAtLeast(0f),
@@ -291,9 +291,11 @@ class OverlayManager(private val context: Context) {
                     canvas.drawRoundRect(rectF, cornerRadius, cornerRadius, frostPaint)
                 }
 
-                // 3. Draw subtle border rim.
-                rectF.set(left, top, right, bottom)
-                canvas.drawRoundRect(rectF, cornerRadius, cornerRadius, borderPaint)
+                // 3. Draw subtle border rim only if stroke color is set.
+                if (borderPaint.color != Color.TRANSPARENT && borderPaint.strokeWidth > 0f) {
+                    rectF.set(left, top, right, bottom)
+                    canvas.drawRoundRect(rectF, cornerRadius, cornerRadius, borderPaint)
+                }
             }
 
             canvas.restore()

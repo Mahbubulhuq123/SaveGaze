@@ -60,3 +60,6 @@ Thumbs.db
 /*.jpg
 /*.jpeg
 
+# Local agent caches
+.agents/
+

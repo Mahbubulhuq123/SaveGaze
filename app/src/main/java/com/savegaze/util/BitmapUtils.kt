@@ -308,3 +308,263 @@ fun Bitmap.hasHumanSkin(
     return skinFraction >= requiredFraction
 }
 
+/**
+ * Computes the exact fraction (0.0 to 1.0) of human skin within a bounding box.
+ * Used to distinguish modest clothed shirts (< 15% skin) from low-cut cleavage or swimwear (>= 25%),
+ * and shirtless males (>= 35% skin).
+ */
+fun Bitmap.getSkinFraction(box: BoundingBox): Float {
+    val bWidth = this.width
+    val bHeight = this.height
+    val left = box.x1.toInt().coerceIn(0, bWidth - 1)
+    val top = box.y1.toInt().coerceIn(0, bHeight - 1)
+    val right = box.x2.toInt().coerceIn(left + 1, bWidth)
+    val bottom = box.y2.toInt().coerceIn(top + 1, bHeight)
+
+    val regionW = right - left
+    val regionH = bottom - top
+    if (regionW < 4 || regionH < 4) return 0f
+
+    val stepX = maxOf(1, regionW / 14)
+    val stepY = maxOf(1, regionH / 14)
+
+    var skinCount = 0
+    var totalSampled = 0
+
+    var y = top
+    while (y < bottom) {
+        var x = left
+        while (x < right) {
+            val pixel = this.getPixel(x, y)
+            val r = (pixel shr 16) and 0xFF
+            val g = (pixel shr 8) and 0xFF
+            val b = pixel and 0xFF
+
+            val isRedOnion = (r in 110..220) && (g in 20..85) && (b in 20..95) && ((r - g) > 65)
+
+            val cb = (-0.1687f * r - 0.3313f * g + 0.5000f * b + 128f).toInt()
+            val cr = (0.5000f * r - 0.4187f * g - 0.0813f * b + 128f).toInt()
+
+            val isWarmSkin = (r > 40 && g > 25 && b > 15) &&
+                    (r > g && (r > b || (g - b) in -15..30)) &&
+                    (cb in 68..142) &&
+                    (cr in 126..180)
+
+            val isCoolSkin = (r > 35 && g > 25 && b > 25) &&
+                    (cb in 75..165) &&
+                    (cr in 115..172) &&
+                    (r >= g * 0.80f)
+
+            if (!isRedOnion && (isWarmSkin || isCoolSkin)) {
+                skinCount++
+            }
+            totalSampled++
+            x += stepX
+        }
+        y += stepY
+    }
+
+    if (totalSampled == 0) return 0f
+    return skinCount.toFloat() / totalSampled.toFloat()
+}
+
+/**
+ * Accurately analyzes facial and neck features to detect male identity:
+ * - Stubble, mustache, 5 o'clock shadow, or facial hair in the lower third of the face
+ * - Squarer, wider masculine jawline
+ * - Upper face (forehead) skin vs lower face contrast
+ * - Prevents sunglasses/eyewear from throwing off forehead luminance
+ */
+fun Bitmap.isLikelyMaleFace(faceBox: BoundingBox): Boolean {
+    val bWidth = this.width
+    val bHeight = this.height
+    val left = faceBox.x1.toInt().coerceIn(0, bWidth - 1)
+    val top = faceBox.y1.toInt().coerceIn(0, bHeight - 1)
+    val right = faceBox.x2.toInt().coerceIn(left + 1, bWidth)
+    val bottom = faceBox.y2.toInt().coerceIn(top + 1, bHeight)
+
+    val faceW = right - left
+    val faceH = bottom - top
+    if (faceW < 10 || faceH < 10) return false
+
+    // Forehead region: 0.10H to 0.26H (avoids sunglasses/eyewear at 0.30H to 0.52H)
+    val foreY1 = top + (faceH * 0.10f).toInt()
+    val foreY2 = top + (faceH * 0.26f).toInt()
+    val foreX1 = left + (faceW * 0.25f).toInt()
+    val foreX2 = left + (faceW * 0.75f).toInt()
+
+    var foreLumSum = 0L
+    var foreSkinCount = 0
+
+    val stepX = maxOf(1, faceW / 12)
+    val stepY = maxOf(1, faceH / 16)
+
+    for (y in foreY1..foreY2 step stepY) {
+        for (x in foreX1..foreX2 step stepX) {
+            val p = this.getPixel(x, y)
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            if (r > 35 && r >= g && g >= b * 0.70f) {
+                foreLumSum += (r * 299 + g * 587 + b * 114) / 1000
+                foreSkinCount++
+            }
+        }
+    }
+
+    val avgForeheadLum = if (foreSkinCount > 0) foreLumSum / foreSkinCount else 128L
+
+    // Lower face: 0.56H to 0.94H (upper lip, mustache, chin, jawline)
+    val lowY1 = top + (faceH * 0.56f).toInt()
+    val lowY2 = top + (faceH * 0.94f).toInt()
+    val lowX1 = left + (faceW * 0.15f).toInt()
+    val lowX2 = left + (faceW * 0.85f).toInt()
+
+    var lowLumSum = 0L
+    var lowCount = 0
+    var stubblePixelCount = 0
+
+    for (y in lowY1..lowY2 step stepY) {
+        for (x in lowX1..lowX2 step stepX) {
+            val p = this.getPixel(x, y)
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            val lum = (r * 299 + g * 587 + b * 114) / 1000
+            lowLumSum += lum
+            lowCount++
+
+            // Stubble / mustache / beard pixels are darker than forehead skin
+            if (lum < avgForeheadLum * 0.78) {
+                stubblePixelCount++
+            }
+        }
+    }
+
+    val avgLowerLum = if (lowCount > 0) lowLumSum / lowCount else 128L
+
+    // Men have darker lower faces due to facial hair / stubble / mustache
+    val hasFacialHairShadow = (lowCount > 0 && stubblePixelCount.toFloat() / lowCount.toFloat() >= 0.12f) ||
+            (avgLowerLum < avgForeheadLum * 0.85)
+
+    return hasFacialHairShadow
+}
+
+/**
+ * Finds the visual container bounds of an image or video card on the screen.
+ * Scans downwards, upwards, and horizontally to identify where the media ends
+ * (e.g. at web page background #202124 / #ffffff, action buttons "Visit"/"Save", or card margins).
+ * Strictly prevents blur boxes from overflowing into adjacent UI, buttons, or other images!
+ */
+fun Bitmap.findMediaContainerBounds(anchorBox: BoundingBox): BoundingBox {
+    val bWidth = this.width
+    val bHeight = this.height
+
+    val centerY = anchorBox.centerY.toInt().coerceIn(0, bHeight - 1)
+    val spanX = maxOf(anchorBox.width * 1.5f, 70f)
+    val sampleLeft = (anchorBox.centerX - spanX).toInt().coerceIn(0, bWidth - 1)
+    val sampleRight = (anchorBox.centerX + spanX).toInt().coerceIn(0, bWidth - 1)
+    val step = maxOf(1, (sampleRight - sampleLeft) / 12)
+
+    // 1. Scan downwards from anchor bottom
+    var bottomY = bHeight.toFloat()
+    val checkYStart = anchorBox.y2.toInt().coerceIn(0, bHeight - 1)
+
+    for (y in checkYStart until bHeight - 4 step 4) {
+        var uiBgCount = 0
+        var total = 0
+
+        var x = sampleLeft
+        while (x <= sampleRight) {
+            val p = this.getPixel(x, y)
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+
+            // Dark theme backgrounds, cards, buttons (#121212 .. #3c4043)
+            val isDarkUi = (r in 14..65 && g in 14..65 && b in 14..70 && kotlin.math.abs(r - g) <= 8 && kotlin.math.abs(g - b) <= 8)
+            // Light theme backgrounds (#f0f0f0 .. #ffffff)
+            val isLightUi = (r >= 235 && g >= 235 && b >= 235)
+            // Blue action buttons like Google's "Visit" (#1a73e8, #8ab4f8)
+            val isActionBtn = (b > 180 && b > r + 35 && b > g + 18)
+
+            if (isDarkUi || isLightUi || isActionBtn) {
+                uiBgCount++
+            }
+            total++
+            x += step
+        }
+
+        // If >= 70% of the row across the person's column matches UI background/buttons, image ended!
+        if (total > 0 && uiBgCount.toFloat() / total >= 0.70f) {
+            bottomY = y.toFloat()
+            break
+        }
+    }
+
+    // 2. Scan upwards from anchor top
+    var topY = 0f
+    val checkYTop = anchorBox.y1.toInt().coerceIn(0, bHeight - 1)
+    for (y in checkYTop downTo 4 step 4) {
+        var uiBgCount = 0
+        var total = 0
+
+        var x = sampleLeft
+        while (x <= sampleRight) {
+            val p = this.getPixel(x, y)
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+
+            val isDarkUi = (r in 14..65 && g in 14..65 && b in 14..70 && kotlin.math.abs(r - g) <= 8 && kotlin.math.abs(g - b) <= 8)
+            val isLightUi = (r >= 235 && g >= 235 && b >= 235)
+            if (isDarkUi || isLightUi) {
+                uiBgCount++
+            }
+            total++
+            x += step
+        }
+
+        if (total > 0 && uiBgCount.toFloat() / total >= 0.75f) {
+            topY = y.toFloat()
+            break
+        }
+    }
+
+    // 3. Scan horizontally left and right at centerY to find card horizontal boundaries if inside a card
+    var leftX = 0f
+    for (x in sampleLeft downTo 4 step 4) {
+        val p = this.getPixel(x, centerY)
+        val r = (p shr 16) and 0xFF
+        val g = (p shr 8) and 0xFF
+        val b = p and 0xFF
+        val isUi = (r in 14..65 && g in 14..65 && b in 14..70 && kotlin.math.abs(r - g) <= 8 && kotlin.math.abs(g - b) <= 8) ||
+                (r >= 235 && g >= 235 && b >= 235)
+        if (isUi) {
+            leftX = x.toFloat()
+            break
+        }
+    }
+
+    var rightX = bWidth.toFloat()
+    for (x in sampleRight until bWidth - 4 step 4) {
+        val p = this.getPixel(x, centerY)
+        val r = (p shr 16) and 0xFF
+        val g = (p shr 8) and 0xFF
+        val b = p and 0xFF
+        val isUi = (r in 14..65 && g in 14..65 && b in 14..70 && kotlin.math.abs(r - g) <= 8 && kotlin.math.abs(g - b) <= 8) ||
+                (r >= 235 && g >= 235 && b >= 235)
+        if (isUi) {
+            rightX = x.toFloat()
+            break
+        }
+    }
+
+    return BoundingBox(
+        x1 = leftX,
+        y1 = topY,
+        x2 = rightX,
+        y2 = bottomY
+    )
+}
+
