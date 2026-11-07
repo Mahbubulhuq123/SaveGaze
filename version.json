@@ -4,5 +4,5 @@
   "publishedAt": "2026-11-07T15:15:00Z",
   "releaseNotes": "• Strict Female-Only Filtering: Only blurs exposed body parts (breasts, cleavage/swimwear, bare midriff, exposed thighs/legs). Fully-clothed men (shirts, polos) and clothed women are never blurred.\n• Strict Male-Only Filtering: Only blurs males who are shirtless or wearing shorts. Fully-clothed men in shirts/polos/jackets are never blurred.\n• Media Container Boundary Containment: Full-body and targeted blur boxes are strictly confined within image and video cards, never overflowing onto search UI, buttons ('Visit', 'Save'), or adjacent images.\n• Full-Body Shielding: Accurately shields from neck down to feet or container boundary while preserving face.\n• Face Blurring Control: Blurs face from jaw to forehead when enabled; guarantees complete facial clarity and protection when disabled.\n• Pure Solid Black Overlay: Eliminated hollow ghost stroke frames around chins.\n• Signed Release: Digitally signed package resolving 'App not installed' error.",
   "downloadUrl": "https://raw.githubusercontent.com/Mahbubulhuq123/SaveGaze/main/release/SaveGaze-arm64-v8a.apk",
-  "apkSize": 59234175
+  "apkSize": 59240447
 }
