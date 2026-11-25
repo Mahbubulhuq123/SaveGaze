@@ -11,22 +11,9 @@
       "type": "UNIVERSAL",
       "filters": [],
       "attributes": [],
-      "versionCode": 10500,
-      "versionName": "1.5",
+      "versionCode": 10600,
+      "versionName": "1.6",
       "outputFile": "SaveGaze.apk"
-    },
-    {
-      "type": "ONE_OF_MANY",
-      "filters": [
-        {
-          "filterType": "ABI",
-          "value": "armeabi-v7a"
-        }
-      ],
-      "attributes": [],
-      "versionCode": 10500,
-      "versionName": "1.5",
-      "outputFile": "SaveGaze-armeabi-v7a.apk"
     },
     {
       "type": "ONE_OF_MANY",
@@ -37,9 +24,22 @@
         }
       ],
       "attributes": [],
-      "versionCode": 10500,
-      "versionName": "1.5",
+      "versionCode": 10600,
+      "versionName": "1.6",
       "outputFile": "SaveGaze-x86_64.apk"
+    },
+    {
+      "type": "ONE_OF_MANY",
+      "filters": [
+        {
+          "filterType": "ABI",
+          "value": "armeabi-v7a"
+        }
+      ],
+      "attributes": [],
+      "versionCode": 10600,
+      "versionName": "1.6",
+      "outputFile": "SaveGaze-armeabi-v7a.apk"
     },
     {
       "type": "ONE_OF_MANY",
@@ -50,8 +50,8 @@
         }
       ],
       "attributes": [],
-      "versionCode": 10500,
-      "versionName": "1.5",
+      "versionCode": 10600,
+      "versionName": "1.6",
       "outputFile": "SaveGaze-x86.apk"
     },
     {
@@ -63,8 +63,8 @@
         }
       ],
       "attributes": [],
-      "versionCode": 10500,
-      "versionName": "1.5",
+      "versionCode": 10600,
+      "versionName": "1.6",
       "outputFile": "SaveGaze-arm64-v8a.apk"
     }
   ],

@@ -1,12 +1,9 @@
 package com.savegaze.service
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.AccessibilityService.ScreenshotResult
-import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -25,21 +22,28 @@ import android.util.Log
 import android.view.Display
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import com.savegaze.MainActivity
 import com.savegaze.R
+import com.savegaze.data.BlurStyle
 import com.savegaze.data.PreferencesManager
+import com.savegaze.guard.ChallengeActivity
+import com.savegaze.guard.ContentGuardLists
+import com.savegaze.guard.ContentGuardRules
 import com.savegaze.ml.BoundingBox
 import com.savegaze.ml.Detection
 import com.savegaze.ml.GenderFilter
-import com.savegaze.ml.NudeLabel
+import com.savegaze.ml.GenderPersonDetector
 import com.savegaze.ml.NudeNetDetector
+import com.savegaze.ml.PersonGenderBox
 import com.savegaze.util.Constants
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +54,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
+import kotlin.math.hypot
 
 class SaveGazeAccessibilityService : AccessibilityService() {
 
@@ -60,6 +66,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         @Volatile
         var isRunning: Boolean = false
             private set
+
+        @Volatile
+        private var instance: SaveGazeAccessibilityService? = null
 
         private val _health = MutableStateFlow(ProtectionHealth())
         val healthFlow: StateFlow<ProtectionHealth> = _health.asStateFlow()
@@ -82,13 +91,17 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         }
 
         fun hasMediaProjection(): Boolean = mediaProjectionData != null
-
         fun isServiceActive(): Boolean = isRunning
+
+        fun clearLockoutUi() {
+            instance?.overlayManager?.hideLockoutOverlay()
+        }
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     private var detector: NudeNetDetector? = null
+    private var genderPersonDetector: GenderPersonDetector? = null
     private var overlayManager: OverlayManager? = null
     private var preferencesManager: PreferencesManager? = null
 
@@ -104,18 +117,29 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private var screenHeight: Int = 2340
     private var screenDensity: Int = 480
     private var lastFrameTime = 0L
-    private var currentScanInterval: Long = Constants.DEFAULT_SCAN_INTERVAL_MS
     private var currentSensitivity: Float = 0.25f
-    private var lastBlurTime = 0L
     private var activeBlurBoxes: List<BoundingBox> = emptyList()
-    private var activeFaceBoxes: List<BoundingBox> = emptyList()
     private var lastScreenSignature: IntArray? = null
     private var lastGenderFilter: GenderFilter? = null
-    private var currentBlurFullBody: Boolean = false
     private var userJustScrolled = false
     private var lastScrollTimestamp = 0L
+    private var lastContentTriggerMs = 0L
+    private var lastGuardCheckMs = 0L
+    private var lastGuardBlockMs = 0L
     private var lastScreenIsStatic = false
     private var notificationShown = false
+
+    // Cached ContentGuard state for ultra-fast synchronous event checks
+    @Volatile private var cgWebsiteEnabled = true
+    @Volatile private var cgKeywordEnabled = true
+    @Volatile private var cgAppEnabled = true
+    @Volatile private var cgTamperEnabled = false
+    @Volatile private var cgActiveDomains: Set<String> = ContentGuardLists.DEFAULT_ADULT_DOMAINS
+    @Volatile private var cgCustomKeywords: Set<String> = emptySet()
+    @Volatile private var cgBlockedApps: Set<String> = emptySet()
+    @Volatile private var cgLockoutUntilMs = 0L
+    @Volatile private var cgTamperUnlockUntilMs = 0L
+    @Volatile private var cgHasMasterPassword = false
 
     private data class TrackedBox(
         var box: BoundingBox,
@@ -126,6 +150,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        instance = this
         isRunning = true
         publishHealth { ProtectionHealth(serviceRunning = true) }
 
@@ -144,73 +169,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             manager.showOverlay()
         }
 
-        serviceScope.launch {
-            preferencesManager?.scanIntervalFlow?.collect { interval ->
-                currentScanInterval = interval
-            }
-        }
-        serviceScope.launch {
-            preferencesManager?.sensitivityFlow?.collect { sensitivity ->
-                currentSensitivity = sensitivity
-                detector?.confidenceThreshold = sensitivity
-            }
-        }
-        serviceScope.launch {
-            preferencesManager?.blurStyleFlow?.collect { style ->
-                val opacity = preferencesManager?.getBlurOpacity() ?: 100
-                overlayManager?.setStyleAndOpacity(style, opacity)
-            }
-        }
-        serviceScope.launch {
-            preferencesManager?.blurOpacityFlow?.collect { opacity ->
-                val style = preferencesManager?.getBlurStyle() ?: com.savegaze.data.BlurStyle.SOLID_BLACK
-                overlayManager?.setStyleAndOpacity(style, opacity)
-            }
-        }
-        serviceScope.launch {
-            preferencesManager?.blurFacesFlow?.collect { blurFaces ->
-                overlayManager?.setBlurFaces(blurFaces)
-            }
-        }
-        serviceScope.launch {
-            preferencesManager?.blurFullBodyFlow?.collect { fullBody ->
-                if (currentBlurFullBody != fullBody) {
-                    currentBlurFullBody = fullBody
-                    trackedBoxes.clear()
-                    activeBlurBoxes = emptyList()
-                    activeFaceBoxes = emptyList()
-                    overlayManager?.clearBlurRegions()
-                    if (preferencesManager?.getIsEnabled() == true && detector != null) {
-                        performScan()
-                    }
-                }
-            }
-        }
-        serviceScope.launch {
-            preferencesManager?.isEnabledFlow?.collect { enabled ->
-                if (!enabled) {
-                    trackedBoxes.clear()
-                    activeBlurBoxes = emptyList()
-                    activeFaceBoxes = emptyList()
-                    lastScreenSignature = null
-                    overlayManager?.clearBlurRegions()
-                } else if (detector != null) {
-                    performScan()
-                }
-                updateNotification(paused = !enabled)
-            }
-        }
-        serviceScope.launch {
-            preferencesManager?.genderFilterFlow?.collect { filter ->
-                if (filter != lastGenderFilter) {
-                    lastGenderFilter = filter
-                    trackedBoxes.clear()
-                    activeBlurBoxes = emptyList()
-                    activeFaceBoxes = emptyList()
-                    overlayManager?.clearBlurRegions()
-                }
-            }
-        }
+        observePreferences()
 
         onMediaProjectionGranted = {
             if (mediaProjection == null) {
@@ -222,12 +181,15 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
         serviceScope.launch {
             try {
-                detector = withContext(Dispatchers.IO) {
-                    NudeNetDetector(this@SaveGazeAccessibilityService)
+                withContext(Dispatchers.IO) {
+                    genderPersonDetector = runCatching {
+                        GenderPersonDetector(this@SaveGazeAccessibilityService)
+                    }.getOrNull()
+                    detector = NudeNetDetector(this@SaveGazeAccessibilityService)
                 }
                 publishHealth { it.copy(detectorStatus = DetectorStatus.READY) }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to load NudeNetDetector", e)
+                Log.e(TAG, "Failed to load detectors", e)
                 publishHealth {
                     it.copy(
                         detectorStatus = DetectorStatus.FAILED,
@@ -241,43 +203,291 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             val protectionEnabled = preferencesManager?.getIsEnabled() ?: true
             showPersistentNotification(paused = !protectionEnabled)
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                startScanningLoop()
-            } else {
-                if (mediaProjectionData != null) {
-                    setupMediaProjection()
-                }
-                startScanningLoop()
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && mediaProjectionData != null) {
+                setupMediaProjection()
             }
+            startScanningLoop()
+        }
+    }
+
+    private fun observePreferences() {
+        val pm = preferencesManager ?: return
+        serviceScope.launch {
+            pm.sensitivityFlow.collect { s ->
+                currentSensitivity = s
+                detector?.confidenceThreshold = s
+                genderPersonDetector?.confidenceThreshold = (s + 0.02f).coerceIn(0.22f, 0.45f)
+            }
+        }
+        serviceScope.launch {
+            pm.blurStyleFlow.collect { style ->
+                overlayManager?.setStyleAndOpacity(style, pm.getBlurOpacity())
+            }
+        }
+        serviceScope.launch {
+            pm.blurOpacityFlow.collect { opacity ->
+                overlayManager?.setStyleAndOpacity(pm.getBlurStyle(), opacity)
+            }
+        }
+        serviceScope.launch {
+            pm.blurFacesFlow.collect { enabled ->
+                overlayManager?.setBlurFaces(enabled)
+                trackedBoxes.clear()
+                activeBlurBoxes = emptyList()
+                overlayManager?.clearBlurRegions()
+                if (pm.getIsEnabled() && detector != null) performScan()
+            }
+        }
+        serviceScope.launch {
+            pm.isEnabledFlow.collect { enabled ->
+                if (!enabled) {
+                    trackedBoxes.clear()
+                    activeBlurBoxes = emptyList()
+                    lastScreenSignature = null
+                    overlayManager?.clearBlurRegions()
+                } else if (detector != null) {
+                    performScan()
+                }
+                updateNotification(paused = !enabled)
+            }
+        }
+        serviceScope.launch {
+            pm.genderFilterFlow.collect { filter ->
+                if (filter != lastGenderFilter) {
+                    lastGenderFilter = filter
+                    trackedBoxes.clear()
+                    activeBlurBoxes = emptyList()
+                    overlayManager?.clearBlurRegions()
+                    if (pm.getIsEnabled() && detector != null) performScan()
+                }
+            }
+        }
+        serviceScope.launch { pm.websiteBlockerEnabledFlow.collect { cgWebsiteEnabled = it } }
+        serviceScope.launch { pm.keywordBlockerEnabledFlow.collect { cgKeywordEnabled = it } }
+        serviceScope.launch { pm.appBlockerEnabledFlow.collect { cgAppEnabled = it } }
+        serviceScope.launch { pm.tamperGuardEnabledFlow.collect { cgTamperEnabled = it } }
+        serviceScope.launch { pm.customKeywordsFlow.collect { cgCustomKeywords = it } }
+        serviceScope.launch { pm.blockedAppsFlow.collect { cgBlockedApps = it } }
+        serviceScope.launch { pm.tamperUnlockUntilMsFlow.collect { cgTamperUnlockUntilMs = it } }
+        serviceScope.launch { pm.masterPasswordHashFlow.collect { cgHasMasterPassword = !it.isNullOrBlank() } }
+        serviceScope.launch {
+            pm.customWebsitesFlow.collect { custom ->
+                cgActiveDomains = ContentGuardRules.buildActiveDomains(custom, pm.getBlockSocialDistractions())
+            }
+        }
+        serviceScope.launch {
+            pm.blockSocialDistractionsFlow.collect { social ->
+                cgActiveDomains = ContentGuardRules.buildActiveDomains(pm.getCustomWebsites(), social)
+            }
+        }
+        serviceScope.launch {
+            pm.lockoutUntilMsFlow.collect { until ->
+                cgLockoutUntilMs = until
+                syncLockoutOverlay()
+            }
+        }
+    }
+
+    private fun syncLockoutOverlay() {
+        val now = System.currentTimeMillis()
+        if (cgLockoutUntilMs > now) {
+            overlayManager?.showLockoutOverlay(
+                lockoutUntilMs = cgLockoutUntilMs,
+                hasMasterPassword = cgHasMasterPassword,
+                onUnlockClick = {
+                    val intent = Intent(this, ChallengeActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        putExtra(ChallengeActivity.EXTRA_MODE, ChallengeActivity.MODE_UNLOCK_LOCKOUT)
+                        putExtra(ChallengeActivity.EXTRA_TITLE, "Unlock Auto-Lockout")
+                    }
+                    startActivity(intent)
+                },
+                onLockoutExpired = {
+                    serviceScope.launch { preferencesManager?.clearLockout() }
+                }
+            )
+        } else {
+            overlayManager?.hideLockoutOverlay()
         }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
+        val pkg = event.packageName?.toString() ?: ""
 
+        // Keep Auto-Lockout enforced across everything except our ChallengeActivity
+        if (cgLockoutUntilMs > System.currentTimeMillis() && pkg != packageName) {
+            syncLockoutOverlay()
+        }
+
+        if (pkg == "com.android.systemui" || pkg == packageName) return
+
+        val now = System.currentTimeMillis()
+
+        // 1. Instant App Blocker & Settings Tamper Guard
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            if (cgAppEnabled && pkg in cgBlockedApps) {
+                triggerGuardBlock("App Blocked", "Blocked access to $pkg", goHome = true)
+                return
+            }
+            checkContentGuardWindow(pkg, forceCheck = true)
+
+            trackedBoxes.clear()
+            activeBlurBoxes = emptyList()
+            lastScreenSignature = null
+            overlayManager?.clearBlurRegions()
+            serviceScope.launch {
+                if (preferencesManager?.getIsEnabled() == true) performScan()
+            }
+            return
+        }
+
+        // 2. Content & URL inspection + Instant AI Vision scan on scroll / page changes
         when (event.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                val pkg = event.packageName?.toString() ?: ""
-                if (pkg == "com.android.systemui") return
-                trackedBoxes.clear()
-                activeBlurBoxes = emptyList()
-                activeFaceBoxes = emptyList()
-                lastScreenSignature = null
-                overlayManager?.clearBlurRegions()
+            AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
+                userJustScrolled = true
+                lastScrollTimestamp = now
+                if (now - lastGuardCheckMs >= 450L) {
+                    checkContentGuardWindow(pkg, forceCheck = false)
+                }
                 serviceScope.launch {
-                    if (preferencesManager?.getIsEnabled() == true) {
-                        performScan()
+                    if (preferencesManager?.getIsEnabled() == true) performScan()
+                }
+            }
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                if (now - lastGuardCheckMs >= 450L) {
+                    checkContentGuardWindow(pkg, forceCheck = false)
+                }
+                if (now - lastContentTriggerMs >= 160L) {
+                    lastContentTriggerMs = now
+                    serviceScope.launch {
+                        if (preferencesManager?.getIsEnabled() == true) performScan()
                     }
                 }
             }
-            AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
-                userJustScrolled = true
-                lastScrollTimestamp = System.currentTimeMillis()
-                serviceScope.launch {
-                    if (preferencesManager?.getIsEnabled() == true) {
-                        performScan()
+        }
+    }
+
+    private fun checkContentGuardWindow(pkg: String, forceCheck: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!forceCheck && now - lastGuardCheckMs < 450L) return
+        lastGuardCheckMs = now
+
+        val root = try {
+            rootInActiveWindow
+        } catch (_: Exception) {
+            null
+        } ?: return
+
+        try {
+            val urls = mutableListOf<String>()
+            val texts = StringBuilder()
+            collectNodeInfo(root, urls, texts, depth = 0)
+            val allText = texts.toString()
+
+            // A. Tamper / Settings Shield
+            if (cgTamperEnabled && now > cgTamperUnlockUntilMs && pkg in ContentGuardLists.SETTINGS_PACKAGES) {
+                if (ContentGuardRules.isTamperSettingsScreen(pkg, allText)) {
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    overlayManager?.showBlockBanner(
+                        "SaveGaze Protection Shield",
+                        "Pass Master Password & 40s Challenge in Guard tab before changing Settings or Uninstall."
+                    )
+                    return
+                }
+            }
+
+            // B. App Blocker fallback (if another launcher/split window hosts blocked package)
+            if (cgAppEnabled && pkg in cgBlockedApps) {
+                triggerGuardBlock("App Blocked", "Blocked app: $pkg", goHome = true)
+                return
+            }
+
+            // C. Browser URL Bar & Visible Text Keyword/Domain Blocker
+            if (cgWebsiteEnabled || cgKeywordEnabled) {
+                val activeDomains = if (cgWebsiteEnabled) cgActiveDomains else emptySet()
+                for (u in urls) {
+                    val res = ContentGuardRules.checkUrl(
+                        rawUrl = u,
+                        blockedDomains = activeDomains,
+                        customKeywords = cgCustomKeywords,
+                        keywordBlockerEnabled = cgKeywordEnabled
+                    )
+                    if (res.blocked) {
+                        triggerGuardBlock(res.reason, res.matchedItem, goHome = false)
+                        return
                     }
                 }
+
+                if (pkg in ContentGuardLists.BROWSER_PACKAGES && cgKeywordEnabled && allText.isNotEmpty()) {
+                    val textRes = ContentGuardRules.checkVisibleScreenText(
+                        screenText = allText,
+                        customKeywords = cgCustomKeywords,
+                        blockedDomains = activeDomains
+                    )
+                    if (textRes.blocked) {
+                        triggerGuardBlock(textRes.reason, textRes.matchedItem, goHome = false)
+                        return
+                    }
+                }
+            }
+        } finally {
+            @Suppress("DEPRECATION")
+            try { root.recycle() } catch (_: Exception) {}
+        }
+    }
+
+    private fun collectNodeInfo(
+        node: AccessibilityNodeInfo?,
+        urls: MutableList<String>,
+        texts: StringBuilder,
+        depth: Int
+    ) {
+        if (node == null || depth > 14 || texts.length > 20_000) return
+        val text = node.text?.toString()
+        val desc = node.contentDescription?.toString()
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+
+        if (!text.isNullOrBlank()) {
+            val looksLikeUrlBar = ContentGuardLists.URL_BAR_ID_HINTS.any { viewId.contains(it) } ||
+                text.contains("http://") || text.contains("https://") ||
+                (text.contains('.') && !text.contains(' ') && text.length in 4..180)
+            if (looksLikeUrlBar) {
+                urls.add(text)
+            }
+            if (texts.isNotEmpty()) texts.append(' ')
+            texts.append(text)
+        } else if (!desc.isNullOrBlank()) {
+            if (texts.isNotEmpty()) texts.append(' ')
+            texts.append(desc)
+        }
+
+        val count = minOf(node.childCount, 40)
+        for (i in 0 until count) {
+            val child = node.getChild(i) ?: continue
+            collectNodeInfo(child, urls, texts, depth + 1)
+            @Suppress("DEPRECATION")
+            try { child.recycle() } catch (_: Exception) {}
+        }
+    }
+
+    private fun triggerGuardBlock(reason: String, detail: String, goHome: Boolean) {
+        val now = System.currentTimeMillis()
+        if (now - lastGuardBlockMs < 1_800L) return
+        lastGuardBlockMs = now
+
+        if (goHome) {
+            performGlobalAction(GLOBAL_ACTION_HOME)
+        } else {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+        }
+        overlayManager?.showBlockBanner(reason, "Blocked: $detail")
+
+        serviceScope.launch {
+            val update = preferencesManager?.recordCrossBlockAndMaybeLockout(now)
+            if (update?.triggeredLockout == true) {
+                cgLockoutUntilMs = update.lockoutUntilMs
+                syncLockoutOverlay()
             }
         }
     }
@@ -303,16 +513,15 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                         overlayManager?.clearBlurRegions()
                     }
 
-                    val baseInterval = preferencesManager?.getScanInterval()
-                        ?: Constants.DEFAULT_SCAN_INTERVAL_MS
+                    val baseInterval = preferencesManager?.getScanInterval() ?: 250L
                     val interval = if (activeBlurBoxes.isNotEmpty() && !lastScreenIsStatic) {
-                        minOf(baseInterval, 160L)
+                        minOf(baseInterval, 130L)
                     } else {
-                        minOf(baseInterval, 300L)
+                        minOf(baseInterval, 220L)
                     }
                     delay(interval)
-                } catch (e: Exception) {
-                    delay(Constants.DEFAULT_SCAN_INTERVAL_MS)
+                } catch (_: Exception) {
+                    delay(250L)
                 }
             }
         }
@@ -322,10 +531,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!scanning.compareAndSet(false, true)) return
             performNativeScreenshot()
-        } else {
-            if (virtualDisplay == null) {
-                setupMediaProjection()
-            }
+        } else if (virtualDisplay == null) {
+            setupMediaProjection()
         }
     }
 
@@ -339,11 +546,10 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     override fun onSuccess(screenshot: ScreenshotResult) {
                         serviceScope.launch {
                             try {
-                                val hardwareBuffer = screenshot.hardwareBuffer
+                                val hwBuffer = screenshot.hardwareBuffer
                                 val colorSpace = screenshot.colorSpace
-                                val hwBitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
-                                hardwareBuffer.close()
-
+                                val hwBitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+                                hwBuffer.close()
                                 if (hwBitmap != null) {
                                     val softBitmap = hwBitmap.copy(Bitmap.Config.ARGB_8888, false)
                                     hwBitmap.recycle()
@@ -364,7 +570,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
                 }
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             scanning.set(false)
         }
     }
@@ -373,14 +579,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private fun setupMediaProjection() {
         if (mediaProjection != null && virtualDisplay != null) return
         val data = mediaProjectionData ?: return
-        val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager ?: return
-        try {
-            mediaProjection = mpManager.getMediaProjection(mediaProjectionResultCode, data)
-        } catch (e: Exception) {
+        val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager ?: return
+        mediaProjection = try {
+            mpManager.getMediaProjection(mediaProjectionResultCode, data)
+        } catch (_: Exception) {
             return
         }
 
-        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
         wm.defaultDisplay.getRealMetrics(metrics)
@@ -394,17 +600,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         }
 
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 3)
-        imageReader?.setOnImageAvailableListener({ reader ->
-            handleCapturedFrame(reader)
-        }, backgroundHandler)
+        imageReader?.setOnImageAvailableListener({ reader -> handleCapturedFrame(reader) }, backgroundHandler)
 
-        val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR
         virtualDisplay = mediaProjection?.createVirtualDisplay(
             "SaveGazeVirtualDisplay",
             screenWidth,
             screenHeight,
             screenDensity,
-            flags,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader?.surface,
             null,
             backgroundHandler
@@ -412,28 +615,22 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     }
 
     private fun handleCapturedFrame(reader: ImageReader) {
-        val image = try {
-            reader.acquireLatestImage()
-        } catch (e: Exception) {
-            null
-        } ?: return
-
+        val image = try { reader.acquireLatestImage() } catch (_: Exception) { null } ?: return
         val now = System.currentTimeMillis()
-        if (now - lastFrameTime < 150L || !scanning.compareAndSet(false, true)) {
+        if (now - lastFrameTime < 140L || !scanning.compareAndSet(false, true)) {
             image.close()
             return
         }
-
         lastFrameTime = now
         processImage(image)
     }
 
     private fun processImage(image: Image) {
         try {
-            val planes = image.planes
-            val buffer = planes[0].buffer
-            val pixelStride = planes[0].pixelStride
-            val rowStride = planes[0].rowStride
+            val plane = image.planes[0]
+            val buffer = plane.buffer
+            val pixelStride = plane.pixelStride
+            val rowStride = plane.rowStride
             val rowPadding = rowStride - pixelStride * screenWidth
             val bitmap = Bitmap.createBitmap(
                 screenWidth + rowPadding / pixelStride,
@@ -447,7 +644,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight).also {
                     if (it != bitmap) bitmap.recycle()
                 }
-            } else bitmap
+            } else {
+                bitmap
+            }
 
             serviceScope.launch(Dispatchers.Default) {
                 try {
@@ -456,7 +655,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     scanning.set(false)
                 }
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             image.close()
             scanning.set(false)
         }
@@ -476,110 +675,38 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
             val bWidth = bitmap.width.toFloat()
             val bHeight = bitmap.height.toFloat()
-
             val sensitivity = preferencesManager?.getSensitivity() ?: 0.25f
             currentDetector.confidenceThreshold = sensitivity
+            genderPersonDetector?.confidenceThreshold = (sensitivity + 0.02f).coerceIn(0.22f, 0.45f)
 
-            val detections: List<Detection> = withContext(Dispatchers.Default) {
-                currentDetector.detect(bitmap)
+            // Run PordaV4x3 person/gender + NudeNet detectors concurrently on Dispatchers.Default
+            val (detections: List<Detection>, personBoxes: List<PersonGenderBox>) = withContext(Dispatchers.Default) {
+                val nudeJob = async { currentDetector.detect(bitmap) }
+                val genderJob = async { genderPersonDetector?.detect(bitmap) ?: emptyList() }
+                nudeJob.await() to genderJob.await()
             }
 
-            val genderFilter: GenderFilter =
-                preferencesManager?.getGenderFilter() ?: GenderFilter.BOTH
-
+            val genderFilter = preferencesManager?.getGenderFilter() ?: GenderFilter.BOTH
             if (lastGenderFilter != null && lastGenderFilter != genderFilter) {
                 trackedBoxes.clear()
                 activeBlurBoxes = emptyList()
-                activeFaceBoxes = emptyList()
                 overlayManager?.clearBlurRegions()
             }
             lastGenderFilter = genderFilter
 
+            val shouldBlurFaces = preferencesManager?.getBlurFaces() ?: false
             val filtered = currentDetector.filterDetections(
                 detections = detections,
+                personDetections = personBoxes,
                 genderFilter = genderFilter,
-                blurFullBody = currentBlurFullBody,
+                blurFaces = shouldBlurFaces,
                 bitmap = bitmap
             )
 
             val allExcluded = activeBlurBoxes + trackedBoxes.map { it.box }
             val currentSignature = computeScreenSignature(bitmap, allExcluded)
             val screenChange = analyzeScreenChange(lastScreenSignature, currentSignature)
-            val isSceneCut = screenChange.isSceneCut
             lastScreenIsStatic = screenChange.isStatic
-            val shouldBlurFaces = preferencesManager?.getBlurFaces() ?: false
-
-            val candidateBoxes = mutableListOf<BoundingBox>()
-            if (filtered.mergedBlurBoxes.isNotEmpty()) {
-                candidateBoxes.addAll(filtered.mergedBlurBoxes)
-            } else {
-                candidateBoxes.addAll(filtered.toBlur.map { it.box })
-            }
-
-            val matchingGenderFaces = when (genderFilter) {
-                GenderFilter.BOTH -> filtered.faces
-                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE && it.confidence >= 0.18f }
-                GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_MALE }
-            }
-
-            val oppositeGenderFaces = when (genderFilter) {
-                GenderFilter.BOTH -> emptyList()
-                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_MALE }
-                GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label == NudeLabel.FACE_FEMALE }
-            }
-
-            // In FEMALE_ONLY mode, only purge candidate boxes under a confirmed male face when no female face is closer!
-            if (genderFilter == GenderFilter.FEMALE_ONLY && oppositeGenderFaces.isNotEmpty()) {
-                candidateBoxes.removeAll { cand ->
-                    oppositeGenderFaces.any { maleFace ->
-                        val touchesMaleFace = cand.iou(maleFace.box) > 0.10f
-                        val isUnderMale = (cand.centerX in (maleFace.box.x1 - maleFace.box.width * 0.8f)..(maleFace.box.x2 + maleFace.box.width * 0.8f) &&
-                                cand.centerY in (maleFace.box.y1)..(maleFace.box.y2 + maleFace.box.height * 4.5f))
-                        val closerToFemale = matchingGenderFaces.any { femaleFace ->
-                            val distF = kotlin.math.hypot(femaleFace.box.centerX - cand.centerX, femaleFace.box.y2 - cand.y1)
-                            val distM = kotlin.math.hypot(maleFace.box.centerX - cand.centerX, maleFace.box.y2 - cand.y1)
-                            distF < distM
-                        }
-                        touchesMaleFace || (isUnderMale && !closerToFemale)
-                    }
-                }
-            }
-
-            // In MALE_ONLY mode, only purge candidate boxes under a confirmed female face when no male face is closer!
-            if (genderFilter == GenderFilter.MALE_ONLY && oppositeGenderFaces.isNotEmpty()) {
-                candidateBoxes.removeAll { cand ->
-                    oppositeGenderFaces.any { femaleFace ->
-                        val touchesFemaleFace = cand.iou(femaleFace.box) > 0.10f
-                        val isUnderFemale = (cand.centerX in (femaleFace.box.x1 - femaleFace.box.width * 0.8f)..(femaleFace.box.x2 + femaleFace.box.width * 0.8f) &&
-                                cand.centerY in (femaleFace.box.y1)..(femaleFace.box.y2 + femaleFace.box.height * 4.5f))
-                        val closerToMale = matchingGenderFaces.any { maleFace ->
-                            val distM = kotlin.math.hypot(maleFace.box.centerX - cand.centerX, maleFace.box.y2 - cand.y1)
-                            val distF = kotlin.math.hypot(femaleFace.box.centerX - cand.centerX, femaleFace.box.y2 - cand.y1)
-                            distM < distF
-                        }
-                        touchesFemaleFace || (isUnderFemale && !closerToMale)
-                    }
-                }
-            }
-
-            if (shouldBlurFaces && matchingGenderFaces.isNotEmpty()) {
-                for (face in matchingGenderFaces) {
-                    val fw = face.box.width
-                    val fh = face.box.height
-                    candidateBoxes.add(BoundingBox(
-                        x1 = (face.box.x1 - fw * 0.05f).coerceAtLeast(0f),
-                        y1 = (face.box.y1 - fh * 0.05f).coerceAtLeast(0f),
-                        x2 = (face.box.x2 + fw * 0.05f).coerceAtMost(bWidth),
-                        y2 = (face.box.y2 + fh * 0.05f).coerceAtMost(bHeight)
-                    ))
-                }
-            }
-
-            val facesToProtect = if (shouldBlurFaces) {
-                oppositeGenderFaces.map { it.box }
-            } else {
-                filtered.faces.map { it.box }
-            }
 
             val now = System.currentTimeMillis()
             val didScrollRecently = userJustScrolled && (now - lastScrollTimestamp < 450L)
@@ -587,40 +714,43 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 userJustScrolled = false
             }
 
-            // Merge contiguous and overlapping candidate boxes (such as continuous face + torso shields)
-            val unifiedCandidateBoxes = currentDetector.mergeAdjacentBoxes(candidateBoxes)
+            val matchingFaces = when (genderFilter) {
+                GenderFilter.BOTH -> filtered.faces
+                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label.isFemale == true }
+                GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label.isFemale == false }
+            }
+            val oppositeFaces = when (genderFilter) {
+                GenderFilter.BOTH -> emptyList()
+                GenderFilter.FEMALE_ONLY -> filtered.faces.filter { it.label.isFemale == false }
+                GenderFilter.MALE_ONLY -> filtered.faces.filter { it.label.isFemale == true }
+            }
 
             val boxesToApply = updateTrackedBoxes(
-                candidateBoxes = unifiedCandidateBoxes,
-                matchingFaces = matchingGenderFaces,
-                oppositeFaces = oppositeGenderFaces,
+                candidateBoxes = filtered.mergedBlurBoxes,
+                matchingFaces = matchingFaces,
+                oppositeFaces = oppositeFaces,
                 screenW = bWidth,
                 screenH = bHeight,
                 now = now,
                 isStaticScreen = lastScreenIsStatic,
-                isSceneCut = isSceneCut,
+                isSceneCut = screenChange.isSceneCut,
                 didScroll = userJustScrolled,
                 shouldBlurFaces = shouldBlurFaces
             )
 
-            val protectionEnabled = preferencesManager?.getIsEnabled() ?: true
-            if (!protectionEnabled) {
+            if (preferencesManager?.getIsEnabled() != true) {
                 trackedBoxes.clear()
                 activeBlurBoxes = emptyList()
-                activeFaceBoxes = emptyList()
                 lastScreenSignature = currentSignature
                 overlayManager?.clearBlurRegions()
             } else if (boxesToApply.isNotEmpty()) {
                 activeBlurBoxes = boxesToApply
-                activeFaceBoxes = facesToProtect
                 if (currentSignature.count { it != -1 } >= 8) {
                     lastScreenSignature = currentSignature
                 }
-                lastBlurTime = now
-                overlayManager?.updateBlurRegions(boxesToApply, facesToProtect)
+                overlayManager?.updateBlurRegions(boxesToApply, filtered.protectedFaces)
             } else {
                 activeBlurBoxes = emptyList()
-                activeFaceBoxes = emptyList()
                 lastScreenSignature = currentSignature
                 overlayManager?.clearBlurRegions()
             }
@@ -648,10 +778,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         isStaticScreen: Boolean,
         isSceneCut: Boolean,
         didScroll: Boolean,
-        shouldBlurFaces: Boolean = false
+        shouldBlurFaces: Boolean
     ): List<BoundingBox> {
-        // 1. Immediately invalidate any tracked box that lies beneath or directly overlaps an opposite-gender face
-        // (e.g., if a male face is detected in FEMALE_ONLY mode, never keep a blur box on or under him!)
         if (oppositeFaces.isNotEmpty()) {
             trackedBoxes.removeAll { tracked ->
                 oppositeFaces.any { opp ->
@@ -660,14 +788,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     val bodyBottom = opp.box.y2 + opp.box.height * 5.0f
                     val colLeft = opp.box.centerX - opp.box.width * 1.0f
                     val colRight = opp.box.centerX + opp.box.width * 1.0f
-                    val underOppFace = tracked.box.centerY in bodyTop..bodyBottom &&
-                            tracked.box.centerX in colLeft..colRight
-                    val hasCloserMatchingFace = matchingFaces.any { mf ->
-                        val distMatching = kotlin.math.hypot(mf.box.centerX - tracked.box.centerX, (mf.box.y2 - tracked.box.y1).coerceAtLeast(0f))
-                        val distOpp = kotlin.math.hypot(opp.box.centerX - tracked.box.centerX, (opp.box.y2 - tracked.box.y1).coerceAtLeast(0f))
-                        distMatching < distOpp
+                    val underOpp = tracked.box.centerY in bodyTop..bodyBottom && tracked.box.centerX in colLeft..colRight
+                    val hasCloserSame = matchingFaces.any { mf ->
+                        hypot(mf.box.centerX - tracked.box.centerX, (mf.box.y2 - tracked.box.y1).coerceAtLeast(0f)) <
+                            hypot(opp.box.centerX - tracked.box.centerX, (opp.box.y2 - tracked.box.y1).coerceAtLeast(0f))
                     }
-                    touchesFace || (!hasCloserMatchingFace && underOppFace)
+                    touchesFace || (!hasCloserSame && underOpp)
                 }
             }
         }
@@ -678,20 +804,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 trackedBoxes.clear()
                 return emptyList()
             }
-
-            // Self-Occlusion Hold: When full-body or face blur is active, the blur overlay itself covers
-            // the subject, preventing model re-detections on subsequent frames.
-            // On a static screen with active blur, lock the tracked boxes indefinitely so they NEVER flicker.
             if (isStaticScreen && oppositeFaces.isEmpty() && trackedBoxes.isNotEmpty()) {
-                for (tracked in trackedBoxes) {
-                    tracked.lastSeenMs = now
-                }
+                trackedBoxes.forEach { it.lastSeenMs = now }
                 return trackedBoxes.map { it.box }
             }
-
-            // In video, hold tracked boxes before expiring, preventing flicker between frames
-            val holdTimeMs = if (isStaticScreen) 2500L else 900L
-            trackedBoxes.removeAll { now - it.lastSeenMs > holdTimeMs }
+            val holdMs = if (isStaticScreen) 2200L else 700L
+            trackedBoxes.removeAll { now - it.lastSeenMs > holdMs }
             return trackedBoxes.map { it.box }
         }
 
@@ -701,137 +819,84 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             return emptyList()
         }
 
-        if (isSceneCut && candidateBoxes.isEmpty() && matchingFaces.isEmpty()) {
-            trackedBoxes.clear()
-            return emptyList()
-        }
-
-        val matchedTrackedIndices = mutableSetOf<Int>()
-
-        // 2. Match new candidate boxes to tracked boxes WITHOUT union-ballooning
+        val matched = mutableSetOf<Int>()
         for (cand in candidateBoxes) {
             var bestIdx = -1
             var bestScore = 0f
-
             for (i in trackedBoxes.indices) {
-                if (i in matchedTrackedIndices) continue
-                val tracked = trackedBoxes[i]
-                val iou = cand.iou(tracked.box)
+                if (i in matched) continue
+                val t = trackedBoxes[i]
+                val iou = cand.iou(t.box)
                 if (iou > 0.10f && iou > bestScore) {
                     bestScore = iou
                     bestIdx = i
                 } else if (bestScore == 0f) {
-                    val cxDist = kotlin.math.abs(cand.centerX - tracked.box.centerX)
-                    val cyDist = kotlin.math.abs(cand.centerY - tracked.box.centerY)
-                    if (cxDist < maxOf(cand.width, tracked.box.width) * 0.55f &&
-                        cyDist < maxOf(cand.height, tracked.box.height) * 0.55f) {
+                    val dx = abs(cand.centerX - t.box.centerX)
+                    val dy = abs(cand.centerY - t.box.centerY)
+                    if (dx < maxOf(cand.width, t.box.width) * 0.55f && dy < maxOf(cand.height, t.box.height) * 0.55f) {
                         bestIdx = i
                     }
                 }
             }
 
             val nearFace = matchingFaces.firstOrNull { f ->
-                kotlin.math.abs(f.box.centerX - cand.centerX) < maxOf(cand.width, f.box.width * 1.8f) &&
-                f.box.y2 <= cand.y2 + 40f
+                abs(f.box.centerX - cand.centerX) < maxOf(cand.width, f.box.width * 1.8f) && f.box.y2 <= cand.y2 + 40f
             }?.box
 
             if (bestIdx >= 0) {
-                matchedTrackedIndices.add(bestIdx)
-                val tracked = trackedBoxes[bestIdx]
-                tracked.lastSeenMs = now
-                if (nearFace != null) tracked.associatedFace = nearFace
-
-                // Smoothly interpolate center and dimensions instead of unioning corners,
-                // so the blur box NEVER balloons larger than the person or crosses outside the video!
-                val alpha = if (isStaticScreen) 0.25f else 0.55f
-                val newCx = tracked.box.centerX * (1f - alpha) + cand.centerX * alpha
-                val newCy = tracked.box.centerY * (1f - alpha) + cand.centerY * alpha
-                val newW = tracked.box.width * (1f - alpha) + cand.width * alpha
-                val newH = tracked.box.height * (1f - alpha) + cand.height * alpha
-
-                tracked.box = BoundingBox(
-                    x1 = (newCx - newW / 2f).coerceIn(0f, screenW),
-                    y1 = (newCy - newH / 2f).coerceIn(0f, screenH),
-                    x2 = (newCx + newW / 2f).coerceIn(0f, screenW),
-                    y2 = (newCy + newH / 2f).coerceIn(0f, screenH)
+                matched.add(bestIdx)
+                val t = trackedBoxes[bestIdx]
+                t.lastSeenMs = now
+                if (nearFace != null) t.associatedFace = nearFace
+                val alpha = if (isStaticScreen) 0.30f else 0.65f
+                val cx = t.box.centerX * (1f - alpha) + cand.centerX * alpha
+                val cy = t.box.centerY * (1f - alpha) + cand.centerY * alpha
+                val w = t.box.width * (1f - alpha) + cand.width * alpha
+                val h = t.box.height * (1f - alpha) + cand.height * alpha
+                t.box = BoundingBox(
+                    (cx - w / 2f).coerceIn(0f, screenW),
+                    (cy - h / 2f).coerceIn(0f, screenH),
+                    (cx + w / 2f).coerceIn(0f, screenW),
+                    (cy + h / 2f).coerceIn(0f, screenH)
                 )
             } else {
                 trackedBoxes.add(
                     TrackedBox(
-                        box = BoundingBox(
-                            x1 = cand.x1.coerceIn(0f, screenW),
-                            y1 = cand.y1.coerceIn(0f, screenH),
-                            x2 = cand.x2.coerceIn(0f, screenW),
-                            y2 = cand.y2.coerceIn(0f, screenH)
+                        BoundingBox(
+                            cand.x1.coerceIn(0f, screenW),
+                            cand.y1.coerceIn(0f, screenH),
+                            cand.x2.coerceIn(0f, screenW),
+                            cand.y2.coerceIn(0f, screenH)
                         ),
-                        lastSeenMs = now,
-                        associatedFace = nearFace
+                        now,
+                        nearFace
                     )
                 )
-                matchedTrackedIndices.add(trackedBoxes.lastIndex)
+                matched.add(trackedBoxes.lastIndex)
             }
         }
 
-        // 3. Anti-Blink Self-Occlusion Lock for unmatched boxes
         for (i in trackedBoxes.indices) {
-            if (i in matchedTrackedIndices) continue
-            val tracked = trackedBoxes[i]
-
-            // Only lock indefinitely on truly static screens when NO opposite-gender face is on screen
+            if (i in matched) continue
+            val t = trackedBoxes[i]
             if (isStaticScreen && !didScroll && !isSceneCut && oppositeFaces.isEmpty()) {
-                tracked.lastSeenMs = now
-                continue
-            }
-
-            // In video: keep shield alive and moving if its matching-gender face is still right above it
-            val anchorFace = matchingFaces.firstOrNull { f ->
-                val horizDist = kotlin.math.abs(f.box.centerX - tracked.box.centerX)
-                val vertDist = kotlin.math.abs(f.box.y2 - tracked.box.y1)
-                horizDist < maxOf(tracked.box.width * 0.75f, f.box.width * 1.8f) &&
-                vertDist < maxOf(tracked.box.height * 0.55f, f.box.height * 2.0f)
-            }?.box
-
-            if (anchorFace != null) {
-                val prevFace = tracked.associatedFace
-                if (prevFace != null) {
-                    val dx = (anchorFace.centerX - prevFace.centerX) * 0.60f
-                    val dy = (anchorFace.y2 - prevFace.y2) * 0.60f
-                    val w = tracked.box.width
-                    val h = tracked.box.height
-                    val newCx = (tracked.box.centerX + dx).coerceIn(w / 2f, screenW - w / 2f)
-                    val newCy = (tracked.box.centerY + dy).coerceIn(h / 2f, screenH - h / 2f)
-                    tracked.box = BoundingBox(
-                        x1 = newCx - w / 2f,
-                        y1 = newCy - h / 2f,
-                        x2 = newCx + w / 2f,
-                        y2 = newCy + h / 2f
-                    )
-                }
-                tracked.associatedFace = anchorFace
-                tracked.lastSeenMs = now
+                t.lastSeenMs = now
             }
         }
 
-        val hasVisibleMatchingFace = matchingFaces.isNotEmpty()
-        val hasActiveBlur = trackedBoxes.isNotEmpty()
-        val holdTimeMs = if (didScroll) 250L
-            else if (isStaticScreen) 2500L
-            else if (hasVisibleMatchingFace || (hasActiveBlur && shouldBlurFaces)) 1000L
-            else 600L
+        val holdTimeMs = when {
+            didScroll -> 220L
+            isStaticScreen -> 2200L
+            matchingFaces.isNotEmpty() || (trackedBoxes.isNotEmpty() && shouldBlurFaces) -> 850L
+            else -> 550L
+        }
         trackedBoxes.removeAll { now - it.lastSeenMs > holdTimeMs }
-
         return trackedBoxes.map { it.box }
     }
 
-    private data class ScreenChangeResult(
-        val isStatic: Boolean,
-        val isSceneCut: Boolean
-    )
+    private data class ScreenChangeResult(val isStatic: Boolean, val isSceneCut: Boolean)
 
-    private fun computeScreenSignature(
-        bitmap: Bitmap,
-        excludeBoxes: List<BoundingBox> = emptyList()
-    ): IntArray {
+    private fun computeScreenSignature(bitmap: Bitmap, excludeBoxes: List<BoundingBox>): IntArray {
         val sig = IntArray(196)
         val w = bitmap.width
         val h = bitmap.height
@@ -840,11 +905,10 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             for (col in 1..14) {
                 val x = (w * col / 15).coerceIn(0, w - 1)
                 val y = (h * row / 15).coerceIn(0, h - 1)
-                val insideExcluded = excludeBoxes.any { b ->
-                    x.toFloat() >= (b.x1 - 6f) && x.toFloat() <= (b.x2 + 6f) &&
-                    y.toFloat() >= (b.y1 - 6f) && y.toFloat() <= (b.y2 + 6f)
+                val inside = excludeBoxes.any { b ->
+                    x.toFloat() in (b.x1 - 6f)..(b.x2 + 6f) && y.toFloat() in (b.y1 - 6f)..(b.y2 + 6f)
                 }
-                sig[idx++] = if (insideExcluded) -1 else bitmap.getPixel(x, y)
+                sig[idx++] = if (inside) -1 else bitmap.getPixel(x, y)
             }
         }
         return sig
@@ -856,31 +920,19 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         }
         var totalValid = 0
         var totalMatches = 0
-
         for (i in sig1.indices) {
             val c1 = sig1[i]
             val c2 = sig2[i]
             if (c1 == -1 || c2 == -1) continue
             totalValid++
-
-            val dr = kotlin.math.abs(((c1 shr 16) and 0xFF) - ((c2 shr 16) and 0xFF))
-            val dg = kotlin.math.abs(((c1 shr 8) and 0xFF) - ((c2 shr 8) and 0xFF))
-            val db = kotlin.math.abs((c1 and 0xFF) - (c2 and 0xFF))
-            if (dr + dg + db < 36) {
-                totalMatches++
-            }
+            val diff = abs(((c1 shr 16) and 0xFF) - ((c2 shr 16) and 0xFF)) +
+                abs(((c1 shr 8) and 0xFF) - ((c2 shr 8) and 0xFF)) +
+                abs((c1 and 0xFF) - (c2 and 0xFF))
+            if (diff < 36) totalMatches++
         }
-
-        if (totalValid < 8) {
-            return ScreenChangeResult(isStatic = true, isSceneCut = false)
-        }
-
-        val matchRate = totalMatches.toFloat() / totalValid.toFloat()
-        val isSceneCut = matchRate < 0.30f
-        // Require >= 0.88f match rate for truly static screens so talking-head videos are treated as moving video
-        val isStatic = matchRate >= 0.88f
-
-        return ScreenChangeResult(isStatic = isStatic, isSceneCut = isSceneCut)
+        if (totalValid < 8) return ScreenChangeResult(isStatic = true, isSceneCut = false)
+        val rate = totalMatches.toFloat() / totalValid.toFloat()
+        return ScreenChangeResult(isStatic = rate >= 0.88f, isSceneCut = rate < 0.30f)
     }
 
     private fun createNotificationChannel() {
@@ -892,29 +944,23 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             description = getString(R.string.accessibility_service_description)
             setShowBadge(false)
         }
-
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(channel)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun showPersistentNotification(paused: Boolean = false) {
-        val openIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
-            openIntent,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val notification = NotificationCompat.Builder(this, Constants.NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(
-                getString(if (paused) R.string.service_paused else R.string.service_running)
-            )
+            .setContentText(getString(if (paused) R.string.service_paused else R.string.service_running))
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -922,8 +968,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.notify(Constants.NOTIFICATION_ID, notification)
+            getSystemService(NotificationManager::class.java).notify(Constants.NOTIFICATION_ID, notification)
         } else {
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -935,51 +980,41 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 } else {
                     startForeground(Constants.NOTIFICATION_ID, notification)
                 }
-            } catch (e: Exception) {
-                val manager = getSystemService(NotificationManager::class.java)
-                manager.notify(Constants.NOTIFICATION_ID, notification)
+            } catch (_: Exception) {
+                getSystemService(NotificationManager::class.java).notify(Constants.NOTIFICATION_ID, notification)
             }
         }
         notificationShown = true
     }
 
     private fun updateNotification(paused: Boolean) {
-        if (notificationShown) {
-            showPersistentNotification(paused = paused)
-        }
+        if (notificationShown) showPersistentNotification(paused = paused)
     }
 
     private fun cleanup() {
+        instance = null
         isRunning = false
         scanJob?.cancel()
         scanJob = null
         trackedBoxes.clear()
         activeBlurBoxes = emptyList()
-        activeFaceBoxes = emptyList()
         lastScreenSignature = null
         notificationShown = false
 
-        virtualDisplay?.release()
-        virtualDisplay = null
-        imageReader?.close()
-        imageReader = null
-        mediaProjection?.stop()
-        mediaProjection = null
-
-        handlerThread?.quitSafely()
-        handlerThread = null
+        virtualDisplay?.release(); virtualDisplay = null
+        imageReader?.close(); imageReader = null
+        mediaProjection?.stop(); mediaProjection = null
+        handlerThread?.quitSafely(); handlerThread = null
         backgroundHandler = null
 
         overlayManager?.setOnVisibilityChangedListener(null)
         overlayManager?.destroy()
         overlayManager = null
 
-        try {
-            detector?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing detector", e)
-        }
+        try { detector?.close() } catch (e: Exception) { Log.e(TAG, "Error closing NudeNet", e) }
         detector = null
+        try { genderPersonDetector?.close() } catch (e: Exception) { Log.e(TAG, "Error closing GenderPersonDetector", e) }
+        genderPersonDetector = null
 
         serviceScope.cancel()
         publishHealth { ProtectionHealth() }

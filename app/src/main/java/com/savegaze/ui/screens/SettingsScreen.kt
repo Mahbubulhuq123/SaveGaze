@@ -76,6 +76,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.savegaze.data.BlurStyle
 import com.savegaze.data.PreferencesManager
+import com.savegaze.guard.BlockPChallengeDialog
+import com.savegaze.guard.DeviceAdminHelper
 import com.savegaze.ml.GenderFilter
 import com.savegaze.update.AppUpdateManager
 import com.savegaze.update.UpdateStatus
@@ -87,6 +89,7 @@ enum class SettingsSection(val title: String) {
     GENDER("Gender Filter"),
     FACE("Face Blurring"),
     FULL_BODY("Full Body Blurring"),
+    UNINSTALL_PROTECTION("Uninstall Protection"),
     SENSITIVITY("Detection Sensitivity"),
     INTENSITY("Blur Intensity"),
     STYLE("Blur Style & Variation"),
@@ -137,8 +140,28 @@ fun SettingsScreen(
     val blurOpacity by preferencesManager.blurOpacityFlow.collectAsState(initial = 100)
     var sliderOpacity by remember { mutableFloatStateOf(blurOpacity.toFloat()) }
     val blurFaces by preferencesManager.blurFacesFlow.collectAsState(initial = false)
-    val blurFullBody by preferencesManager.blurFullBodyFlow.collectAsState(initial = false)
+    val tamperEnabled by preferencesManager.tamperGuardEnabledFlow.collectAsState(initial = false)
+    val masterHash by preferencesManager.masterPasswordHashFlow.collectAsState(initial = null)
+    var pendingChallengeTitle by remember { mutableStateOf<String?>(null) }
+    var pendingChallengeAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var howItWorksExpanded by remember { mutableStateOf(false) }
+
+    pendingChallengeTitle?.let { title ->
+        BlockPChallengeDialog(
+            actionTitle = title,
+            storedPasswordHash = masterHash,
+            onSuccess = {
+                pendingChallengeTitle = null
+                val act = pendingChallengeAction
+                pendingChallengeAction = null
+                act?.invoke()
+            },
+            onDismiss = {
+                pendingChallengeTitle = null
+                pendingChallengeAction = null
+            }
+        )
+    }
 
     LaunchedEffect(blurOpacity) {
         sliderOpacity = blurOpacity.toFloat()
@@ -199,7 +222,7 @@ fun SettingsScreen(
 
                 GenderFilterOption(
                     label = "Male Only",
-                    description = "Blur only male exposed body parts (face preserved)",
+                    description = "Blur full male body immediately on semi-nude content (plus face if Face Blurring is ON)",
                     selected = selectedGender == GenderFilter.MALE_ONLY,
                     onClick = {
                         coroutineScope.launch { preferencesManager.setGenderFilter(GenderFilter.MALE_ONLY) }
@@ -208,7 +231,7 @@ fun SettingsScreen(
 
                 GenderFilterOption(
                     label = "Female Only",
-                    description = "Blur only female exposed body parts (face preserved)",
+                    description = "Blur full female body immediately on semi-nude content (plus face if Face Blurring is ON)",
                     selected = selectedGender == GenderFilter.FEMALE_ONLY,
                     onClick = {
                         coroutineScope.launch { preferencesManager.setGenderFilter(GenderFilter.FEMALE_ONLY) }
@@ -217,7 +240,7 @@ fun SettingsScreen(
 
                 GenderFilterOption(
                     label = "Both",
-                    description = "Blur all detected intimate body parts (faces preserved)",
+                    description = "Blur full body immediately on semi-nude content for both genders",
                     selected = selectedGender == GenderFilter.BOTH,
                     onClick = {
                         coroutineScope.launch { preferencesManager.setGenderFilter(GenderFilter.BOTH) }
@@ -242,8 +265,13 @@ fun SettingsScreen(
                     .toggleable(
                         value = blurFaces,
                         onValueChange = { checked ->
-                            coroutineScope.launch {
-                                preferencesManager.setBlurFaces(checked)
+                            if (!checked) {
+                                pendingChallengeTitle = "Disable Face Blurring"
+                                pendingChallengeAction = {
+                                    coroutineScope.launch { preferencesManager.setBlurFaces(false) }
+                                }
+                            } else {
+                                coroutineScope.launch { preferencesManager.setBlurFaces(true) }
                             }
                         },
                         role = Role.Switch
@@ -262,9 +290,9 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = if (blurFaces)
-                            "Faces are blurred along with intimate regions."
+                            "Thoroughly blurs faces of the selected target gender, plus whole body on semi-nude detection."
                         else
-                            "Faces are strictly preserved and never blurred.",
+                            "Faces are preserved; whole body blurs automatically when semi-nude content is detected.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -279,7 +307,7 @@ fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Full Body Blurring Toggle Section
+        // Whole-Body Semi-Nude Mode Info Section
         ElevatedCard(
             modifier = Modifier
                 .fillMaxWidth()
@@ -287,14 +315,56 @@ fun SettingsScreen(
             shape = RoundedCornerShape(16.dp),
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp)
+            ) {
+                Text(
+                    text = "Whole-Body Semi-Nude Blurring",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Active automatically: instead of small fragmented body-part patches, SaveGaze blurs the entire target-gender body as soon as any semi-nude or nude cue is detected.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Uninstall Protection / Prevention Section (Off on fresh install; stays ON after updates once enabled)
+        ElevatedCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .registerSettingsSection(SettingsSection.UNINSTALL_PROTECTION, sectionOffsets),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
+        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .toggleable(
-                        value = blurFullBody,
-                        onValueChange = { checked ->
-                            coroutineScope.launch {
-                                preferencesManager.setBlurFullBody(checked)
+                        value = tamperEnabled,
+                        onValueChange = { wantOn ->
+                            if (wantOn) {
+                                coroutineScope.launch {
+                                    preferencesManager.setTamperGuardEnabled(true)
+                                    DeviceAdminHelper.requestEnable(context)
+                                }
+                            } else {
+                                pendingChallengeTitle = "Disable Uninstall Protection"
+                                pendingChallengeAction = {
+                                    coroutineScope.launch {
+                                        preferencesManager.grantTemporaryTamperUnlock(90_000L)
+                                        preferencesManager.setTamperGuardEnabled(false)
+                                        DeviceAdminHelper.disable(context)
+                                    }
+                                }
                             }
                         },
                         role = Role.Switch
@@ -305,24 +375,24 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Blur Full Body",
+                        text = "Uninstall Protection",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = if (blurFullBody)
-                            "Full body is blurred from head/neck down to feet for any detected person."
+                        text = if (tamperEnabled)
+                            "Active: blocks uninstalling SaveGaze, Force Stop, and disabling Accessibility/Admin. Persists across app updates."
                         else
-                            "Standard targeted shielding for intimate and seductive body regions.",
+                            "Off by default after fresh install. Turn ON to block casual uninstallation & tampering.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Spacer(modifier = Modifier.width(16.dp))
                 Switch(
-                    checked = blurFullBody,
+                    checked = tamperEnabled,
                     onCheckedChange = null
                 )
             }
@@ -371,7 +441,17 @@ fun SettingsScreen(
                     value = sensitivity,
                     onValueChange = { sensitivity = it },
                     onValueChangeFinished = {
-                        coroutineScope.launch { preferencesManager.setSensitivity(sensitivity) }
+                        if (sensitivity > sensitivityPreference && !masterHash.isNullOrBlank()) {
+                            val target = sensitivity
+                            sensitivity = sensitivityPreference
+                            pendingChallengeTitle = "Loosen Detection Sensitivity"
+                            pendingChallengeAction = {
+                                sensitivity = target
+                                coroutineScope.launch { preferencesManager.setSensitivity(target) }
+                            }
+                        } else {
+                            coroutineScope.launch { preferencesManager.setSensitivity(sensitivity) }
+                        }
                     },
                     valueRange = 0.15f..0.45f,
                     colors = SliderDefaults.colors(
@@ -1068,15 +1148,15 @@ fun SettingsScreen(
 
                         HowItWorksStep(
                             number = "2",
-                            title = "AI Detection",
-                            description = "An on-device ONNX neural network analyzes each frame to detect faces and classify gender."
+                            title = "Hybrid AI Gender & Semi-Nude Detection",
+                            description = "Dual on-device ONNX models (PordaV4x3 person/gender + NudeNet semi-nude) classify target genders and semi-nude cues with instant action."
                         )
                         Spacer(modifier = Modifier.height(12.dp))
 
                         HowItWorksStep(
                             number = "3",
-                            title = "Smart Blur",
-                            description = "Detected regions matching your filter settings are blurred with a translucent overlay, protecting your gaze in real time."
+                            title = "Whole-Body Blur & ContentGuard Shield",
+                            description = "Semi-nude detections blur the whole body (plus faces when enabled), while the built-in DNS VPN, keyword/app blockers, 5-in-10m lockout, and 40s challenge prevent bypassing."
                         )
                         Spacer(modifier = Modifier.height(12.dp))
 

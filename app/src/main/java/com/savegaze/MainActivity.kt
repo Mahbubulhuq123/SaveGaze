@@ -3,7 +3,7 @@ package com.savegaze
 import android.app.Activity
 import android.content.Context
 import android.media.projection.MediaProjectionManager
-import android.os.Build
+import android.net.VpnService
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -31,12 +32,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.savegaze.data.PreferencesManager
+import com.savegaze.guard.SaveGazeVpnService
 import com.savegaze.service.SaveGazeAccessibilityService
+import com.savegaze.ui.screens.GuardScreen
 import com.savegaze.ui.screens.HomeScreen
 import com.savegaze.ui.screens.SettingsScreen
 import com.savegaze.ui.screens.SettingsSection
@@ -53,19 +55,32 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            android.util.Log.w("MainActivity", "MediaProjection permission GRANTED! Sending to service...")
             SaveGazeAccessibilityService.setMediaProjectionResult(result.resultCode, result.data!!)
             hasProjectionPermission = true
-        } else {
-            android.util.Log.w("MainActivity", "MediaProjection permission NOT granted: resultCode=${result.resultCode}")
+        }
+    }
+
+    private val vpnPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            SaveGazeVpnService.start(applicationContext)
         }
     }
 
     fun requestScreenCapturePermission() {
-        android.util.Log.w("MainActivity", "Requesting MediaProjection screen capture intent...")
         val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
         mpManager?.createScreenCaptureIntent()?.let { intent ->
             mediaProjectionLauncher.launch(intent)
+        }
+    }
+
+    fun requestStartVpnBlocker() {
+        val prepareIntent = VpnService.prepare(this)
+        if (prepareIntent != null) {
+            vpnPermissionLauncher.launch(prepareIntent)
+        } else {
+            SaveGazeVpnService.start(applicationContext)
         }
     }
 
@@ -73,16 +88,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         try {
             enableEdgeToEdge()
-        } catch (e: Throwable) {
-            android.util.Log.w("MainActivity", "EdgeToEdge warning: ${e.message}")
+        } catch (_: Throwable) {
         }
 
-        try {
-            hasProjectionPermission = SaveGazeAccessibilityService.hasMediaProjection()
-        } catch (e: Throwable) {
-            android.util.Log.e("MainActivity", "Failed to check media projection state", e)
-        }
-
+        hasProjectionPermission = SaveGazeAccessibilityService.hasMediaProjection()
         val preferencesManager = PreferencesManager(applicationContext)
         val updateManager = AppUpdateManager.getInstance(applicationContext)
 
@@ -92,7 +101,9 @@ class MainActivity : ComponentActivity() {
                     preferencesManager = preferencesManager,
                     updateManager = updateManager,
                     hasMediaProjection = hasProjectionPermission,
-                    onRequestMediaProjection = { requestScreenCapturePermission() }
+                    onRequestMediaProjection = { requestScreenCapturePermission() },
+                    onRequestVpnStart = { requestStartVpnBlocker() },
+                    onStopVpn = { SaveGazeVpnService.stop(applicationContext) }
                 )
             }
         }
@@ -109,7 +120,9 @@ private fun SaveGazeApp(
     preferencesManager: PreferencesManager,
     updateManager: AppUpdateManager,
     hasMediaProjection: Boolean,
-    onRequestMediaProjection: () -> Unit
+    onRequestMediaProjection: () -> Unit,
+    onRequestVpnStart: () -> Unit,
+    onStopVpn: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var pendingSettingsSection by remember { mutableStateOf<SettingsSection?>(null) }
@@ -118,20 +131,16 @@ private fun SaveGazeApp(
     val currentVersion = remember { updateManager.getCurrentVersionName() }
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // Check for updates automatically in background on launch
     LaunchedEffect(Unit) {
         updateManager.checkForUpdates(manual = false)
     }
 
-    // Auto-resume installation if user returns from granting unknown sources permission
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 val current = updateManager.status.value
-                if (current is UpdateStatus.PermissionRequired) {
-                    if (updateManager.canInstallUnknownApps()) {
-                        updateManager.installApk(current.apkFile)
-                    }
+                if (current is UpdateStatus.PermissionRequired && updateManager.canInstallUnknownApps()) {
+                    updateManager.installApk(current.apkFile)
                 }
             }
         }
@@ -139,7 +148,6 @@ private fun SaveGazeApp(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Modal In-App Update Dialog
     UpdateDialog(
         status = updateStatus,
         currentVersion = currentVersion,
@@ -155,6 +163,7 @@ private fun SaveGazeApp(
     val navigationItems = remember {
         listOf(
             NavigationItem(label = "Home", icon = Icons.Default.Home),
+            NavigationItem(label = "Guard", icon = Icons.Default.Security),
             NavigationItem(label = "Settings", icon = Icons.Default.Settings)
         )
     }
@@ -173,12 +182,7 @@ private fun SaveGazeApp(
                             pendingSettingsSection = null
                             selectedTab = index
                         },
-                        icon = {
-                            Icon(
-                                imageVector = item.icon,
-                                contentDescription = item.label
-                            )
-                        },
+                        icon = { Icon(imageVector = item.icon, contentDescription = item.label) },
                         label = { Text(text = item.label) }
                     )
                 }
@@ -191,13 +195,21 @@ private fun SaveGazeApp(
                 updateManager = updateManager,
                 onOpenSettings = { section ->
                     pendingSettingsSection = section
-                    selectedTab = 1
+                    selectedTab = 2
                 },
+                onOpenGuard = { selectedTab = 1 },
+                onRequestVpnStart = onRequestVpnStart,
                 hasMediaProjection = hasMediaProjection,
                 onRequestMediaProjection = onRequestMediaProjection,
                 modifier = Modifier.padding(innerPadding)
             )
-            1 -> SettingsScreen(
+            1 -> GuardScreen(
+                preferencesManager = preferencesManager,
+                onRequestVpnStart = onRequestVpnStart,
+                onStopVpn = onStopVpn,
+                modifier = Modifier.padding(innerPadding)
+            )
+            2 -> SettingsScreen(
                 preferencesManager = preferencesManager,
                 updateManager = updateManager,
                 sectionToReveal = pendingSettingsSection,

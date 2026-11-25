@@ -25,6 +25,17 @@ enum class NudeLabel(val displayName: String, val isFemale: Boolean?, val isExpo
     }
 }
 
+enum class PersonGender {
+    MALE,
+    FEMALE
+}
+
+data class PersonGenderBox(
+    val gender: PersonGender,
+    val confidence: Float,
+    val box: BoundingBox
+)
+
 data class Detection(
     val label: NudeLabel,
     val confidence: Float,
@@ -73,5 +84,7 @@ data class FilteredDetections(
     val toBlur: List<Detection>,
     val faces: List<Detection>,
     val hasNsfwContent: Boolean,
-    val mergedBlurBoxes: List<BoundingBox> = emptyList()
+    val mergedBlurBoxes: List<BoundingBox> = emptyList(),
+    val faceBlurBoxes: List<BoundingBox> = emptyList(),
+    val protectedFaces: List<BoundingBox> = emptyList()
 )

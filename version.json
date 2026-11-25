@@ -1,8 +1,8 @@
 {
-  "versionCode": 10500,
-  "versionName": "1.5",
-  "publishedAt": "2026-11-07T16:50:00Z",
-  "releaseNotes": "• Fix Male-Only Blurring: Reliably detects and blurs shirtless men (bare chest, belly, armpits) and men wearing shorts/speedos while preserving fully-clothed men.\n• Eliminate Blinking & Flickering: Rebuilt tracking retention with self-occlusion locking so toggling full-body and face blurring produces a stable, non-blinking shield.\n• Complete Neck & Cleavage Coverage: Targeted blurring now extends seamlessly up to the jawline/neck whenever breast/cleavage is exposed up to the neck.\n• Exposed Backside Blurring: Fully blurs exposed buttocks, covered swimwear buttocks, and exposed female backlines.\n• Signed Release: v1.5 digitally signed and installable directly over v1.4.",
+  "versionCode": 10600,
+  "versionName": "1.6",
+  "publishedAt": "2026-11-25T18:05:00Z",
+  "releaseNotes": "• Hybrid Gender & Whole-Body Semi-Nude Blur: Added PordaV4x3 YOLOv4-tiny gender detector fused with NudeNet for fast target-gender whole-body blurring on semi-nude exposure.\n• Stronger Face Blurring: Thoroughly blurs target-gender faces when enabled while keeping opposite-gender faces clear.\n• ContentGuard Protection Suite: Added local DNS VPN firewall, browser URL & visible text keyword blocking, custom App Blocker, 5-in-10m Auto-Lockout overlay, and 40s challenge + Master Password.\n• Uninstall Protection Lifecycle: Defaults OFF on fresh install; once turned ON in Settings/Guard, persists across future APK updates and blocks uninstall/force-stop.\n• Signed v1.6 Multi-ABI Release: Updated APKs for arm64-v8a, armeabi-v7a, x86, x86_64, and universal installs.",
   "downloadUrl": "https://raw.githubusercontent.com/Mahbubulhuq123/SaveGaze/main/release/SaveGaze-arm64-v8a.apk",
-  "apkSize": 59243095
+  "apkSize": 79804422
 }

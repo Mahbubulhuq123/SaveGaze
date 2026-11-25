@@ -34,10 +34,12 @@ import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -78,6 +80,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.savegaze.data.BlurStyle
 import com.savegaze.data.PreferencesManager
+import com.savegaze.guard.BlockPChallengeDialog
+import com.savegaze.guard.ContentGuardRules
+import com.savegaze.guard.SaveGazeVpnService
 import com.savegaze.ml.GenderFilter
 import com.savegaze.service.DetectorStatus
 import com.savegaze.service.SaveGazeAccessibilityService
@@ -133,6 +138,8 @@ fun HomeScreen(
     preferencesManager: PreferencesManager,
     updateManager: AppUpdateManager,
     onOpenSettings: (SettingsSection) -> Unit = {},
+    onOpenGuard: () -> Unit = {},
+    onRequestVpnStart: () -> Unit = {},
     hasMediaProjection: Boolean = true,
     onRequestMediaProjection: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -147,6 +154,24 @@ fun HomeScreen(
     var isServiceEnabled by remember { mutableStateOf<Boolean?>(null) }
     val masterEnabled by preferencesManager.isEnabledFlow.collectAsState(initial = null)
     val health by SaveGazeAccessibilityService.healthFlow.collectAsState()
+    val vpnRunning by SaveGazeVpnService.isRunningFlow.collectAsState()
+    val masterHash by preferencesManager.masterPasswordHashFlow.collectAsState(initial = null)
+    val recentBlocks by preferencesManager.recentBlockCountFlow.collectAsState(initial = 0)
+    val totalBlocks by preferencesManager.totalBlockedCountFlow.collectAsState(initial = 0)
+
+    var pendingDisableProtection by remember { mutableStateOf(false) }
+
+    if (pendingDisableProtection) {
+        BlockPChallengeDialog(
+            actionTitle = "Pause SaveGaze Protection",
+            storedPasswordHash = masterHash,
+            onSuccess = {
+                pendingDisableProtection = false
+                coroutineScope.launch { preferencesManager.setIsEnabled(false) }
+            },
+            onDismiss = { pendingDisableProtection = false }
+        )
+    }
 
     val selectedGender by preferencesManager.genderFilterFlow.collectAsState(initial = GenderFilter.BOTH)
     val sensitivity by preferencesManager.sensitivityFlow.collectAsState(initial = 0.25f)
@@ -461,8 +486,12 @@ fun HomeScreen(
                         Switch(
                             checked = systemEnabled && masterEnabled == true,
                             onCheckedChange = { enabled ->
-                                coroutineScope.launch {
-                                    preferencesManager.setIsEnabled(enabled)
+                                if (!enabled) {
+                                    pendingDisableProtection = true
+                                } else {
+                                    coroutineScope.launch {
+                                        preferencesManager.setIsEnabled(true)
+                                    }
                                 }
                             },
                             enabled = systemEnabled && protectionState != ProtectionState.CHECKING
@@ -656,6 +685,31 @@ fun HomeScreen(
                         level = frameHealthLevel(health.lastFrameAtMillis, nowMillis)
                     )
 
+                    HealthRow(
+                        label = "DNS Website Firewall",
+                        value = if (vpnRunning) "Active ($totalBlocks blocked)" else "Off",
+                        level = if (vpnRunning) HealthLevel.OK else HealthLevel.WARN
+                    )
+
+                    HealthRow(
+                        label = "Cross-Block Lockout",
+                        value = "$recentBlocks / ${ContentGuardRules.CROSS_BLOCK_LIMIT} in 10m",
+                        level = if (recentBlocks > 0) HealthLevel.WARN else HealthLevel.NEUTRAL
+                    )
+
+                    if (!vpnRunning) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = onRequestVpnStart,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Enable Website Blocker (VPN)")
+                        }
+                    }
+
                     health.lastError?.let { error ->
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
@@ -725,6 +779,15 @@ fun HomeScreen(
                     title = "Blur Style & Opacity",
                     value = "${blurStyle.displayName.substringBefore(" (")} · $blurOpacity%",
                     onClick = { onOpenSettings(SettingsSection.STYLE) }
+                )
+
+                Divider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                SettingsShortcutRow(
+                    icon = Icons.Default.Security,
+                    title = "ContentGuard Blocker & Lockout",
+                    value = "Websites, Keywords, Apps & 40s Challenge",
+                    onClick = onOpenGuard
                 )
             }
         }

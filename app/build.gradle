@@ -17,7 +17,7 @@ def getGitVersionName = { ->
             return tag.replaceFirst('^[vV]', '')
         }
     } catch (Exception ignored) {}
-    return "1.5"
+    return "1.6"
 }
 
 def getGitVersionCode = { String verName ->
@@ -81,10 +81,6 @@ android {
         jniLibs {
             useLegacyPackaging = true
         }
-    }
-
-    androidResources {
-        noCompress += 'onnx'
     }
 
     splits {

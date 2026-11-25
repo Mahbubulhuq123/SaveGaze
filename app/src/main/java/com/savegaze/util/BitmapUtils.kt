@@ -48,6 +48,54 @@ fun Bitmap.toFloatBuffer(width: Int, height: Int): FloatBuffer {
 }
 
 /**
+ * Scales this bitmap using top-left aspect-ratio letterbox padding into [netWidth] x [netHeight]
+ * matching Darknet YOLOv4-tiny inference preprocessing (RGB, 0..1, bottom/right black pad).
+ * Returns the CHW FloatBuffer along with reciprocal scaling factors (tileW/newW, tileH/newH).
+ */
+fun Bitmap.toTopLeftLetterboxFloatBuffer(
+    netWidth: Int,
+    netHeight: Int
+): Triple<FloatBuffer, Float, Float> {
+    val srcW = this.width
+    val srcH = this.height
+    val scale = minOf(netWidth.toFloat() / srcW, netHeight.toFloat() / srcH)
+    val newW = (srcW * scale).toInt().coerceIn(1, netWidth)
+    val newH = (srcH * scale).toInt().coerceIn(1, netHeight)
+
+    val resized = if (srcW == newW && srcH == newH) {
+        this
+    } else {
+        Bitmap.createScaledBitmap(this, newW, newH, true)
+    }
+
+    val srcPixels = IntArray(newW * newH)
+    resized.getPixels(srcPixels, 0, newW, 0, 0, newW, newH)
+    if (resized !== this) {
+        resized.recycle()
+    }
+
+    val channelSize = netWidth * netHeight
+    val byteBuffer = ByteBuffer.allocateDirect(3 * channelSize * 4)
+        .order(ByteOrder.nativeOrder())
+    val buffer = byteBuffer.asFloatBuffer()
+    // Direct buffers are zero-initialized so black bottom/right padding is already 0f.
+    for (y in 0 until newH) {
+        val srcRow = y * newW
+        val dstRow = y * netWidth
+        for (x in 0 until newW) {
+            val pixel = srcPixels[srcRow + x]
+            val dstIdx = dstRow + x
+            buffer.put(dstIdx, ((pixel shr 16) and 0xFF) / 255f)
+            buffer.put(dstIdx + channelSize, ((pixel shr 8) and 0xFF) / 255f)
+            buffer.put(dstIdx + 2 * channelSize, (pixel and 0xFF) / 255f)
+        }
+    }
+
+    buffer.rewind()
+    return Triple(buffer, srcW.toFloat() / newW.toFloat(), srcH.toFloat() / newH.toFloat())
+}
+
+/**
  * Creates a batched direct CHW float buffer for a list of bitmaps.
  * Shape: [bitmaps.size, 3, width, height]
  * Normalized to 0..1 (RGB channel order).
