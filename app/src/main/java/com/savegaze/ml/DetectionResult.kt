@@ -33,7 +33,8 @@ enum class PersonGender {
 data class PersonGenderBox(
     val gender: PersonGender,
     val confidence: Float,
-    val box: BoundingBox
+    val box: BoundingBox,
+    val oppositeConfidence: Float = 0f
 )
 
 data class Detection(

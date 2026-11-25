@@ -90,12 +90,15 @@ class GenderPersonDetector(
                         val maleScore = objScore * sigmoid(cls0Row[idx])
                         val femaleScore = objScore * sigmoid(cls1Row[idx])
                         val bestScore: Float
+                        val otherScore: Float
                         val gender: PersonGender
                         if (femaleScore >= maleScore) {
                             bestScore = femaleScore
+                            otherScore = maleScore
                             gender = PersonGender.FEMALE
                         } else {
                             bestScore = maleScore
+                            otherScore = femaleScore
                             gender = PersonGender.MALE
                         }
                         if (bestScore < threshold) continue
@@ -117,7 +120,7 @@ class GenderPersonDetector(
                             y2 = (cyPx + hPx / 2f).coerceIn(0f, maxHeight)
                         )
                         if (box.width >= 10f && box.height >= 10f) {
-                            candidates.add(PersonGenderBox(gender, bestScore, box))
+                            candidates.add(PersonGenderBox(gender, bestScore, box, otherScore))
                         }
                     }
                 }
@@ -133,7 +136,14 @@ class GenderPersonDetector(
             for (cand in sorted) {
                 val suppressed = kept.any { existing ->
                     val iou = cand.box.iou(existing.box)
-                    if (existing.gender == cand.gender) iou > iouThreshold else iou > 0.60f
+                    if (existing.gender == cand.gender) {
+                        iou > iouThreshold
+                    } else {
+                        val candInsideExisting = cand.box.centerX in existing.box.x1..existing.box.x2 &&
+                            cand.box.centerY in existing.box.y1..existing.box.y2 &&
+                            existing.confidence >= cand.confidence * 1.25f
+                        iou > 0.28f || candInsideExisting
+                    }
                 }
                 if (!suppressed) {
                     kept.add(cand)

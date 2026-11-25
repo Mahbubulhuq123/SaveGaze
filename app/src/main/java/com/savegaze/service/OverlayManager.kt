@@ -355,6 +355,7 @@ class OverlayManager(private val context: Context) {
         }
 
         fun setRegions(newRegions: List<BoundingBox>, newFaces: List<BoundingBox> = emptyList()) {
+            if (regions == newRegions && faces == newFaces) return
             regions = newRegions
             faces = newFaces
             invalidate()
