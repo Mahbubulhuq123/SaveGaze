@@ -100,15 +100,15 @@ SaveGaze/
 
 ## 📦 Prebuilt APKs & Architecture Support
 
-SaveGaze is distributed with dedicated builds for every Android architecture as well as a universal bundle:
+SaveGaze is distributed via **[GitHub Releases](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest)** (no binary APKs committed to Git) with dedicated builds for every Android architecture as well as a universal bundle:
 
 | Package | Target Architecture | Description |
 |---|---|---|
-| **[`SaveGaze.apk`](SaveGaze.apk)** | **Universal** (All ABIs) | Runs on **every Android phone, tablet, and emulator**. Guaranteed universal compatibility. |
-| **[`SaveGaze-arm64-v8a.apk`](release/SaveGaze-arm64-v8a.apk)** | `arm64-v8a` | **Recommended for modern phones** (Samsung, Pixel, Xiaomi, OnePlus, Motorola, etc.). |
-| **[`SaveGaze-armeabi-v7a.apk`](release/SaveGaze-armeabi-v7a.apk)** | `armeabi-v7a` | For older or budget 32-bit ARM Android devices. |
-| **[`SaveGaze-x86_64.apk`](release/SaveGaze-x86_64.apk)** | `x86_64` | For 64-bit Android Studio emulators and ChromeOS Android subsystem. |
-| **[`SaveGaze-x86.apk`](release/SaveGaze-x86.apk)** | `x86` | For legacy 32-bit x86 emulators. |
+| **[`SaveGaze.apk`](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest/download/SaveGaze.apk)** | **Universal** (All ABIs) | Runs on **every Android phone, tablet, and emulator**. Guaranteed universal compatibility. |
+| **[`SaveGaze-arm64-v8a.apk`](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest/download/SaveGaze-arm64-v8a.apk)** | `arm64-v8a` | **Recommended for modern phones** (Samsung, Pixel, Xiaomi, OnePlus, Motorola, etc.). |
+| **[`SaveGaze-armeabi-v7a.apk`](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest/download/SaveGaze-armeabi-v7a.apk)** | `armeabi-v7a` | For older or budget 32-bit ARM Android devices. |
+| **[`SaveGaze-x86_64.apk`](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest/download/SaveGaze-x86_64.apk)** | `x86_64` | For 64-bit Android Studio emulators and ChromeOS Android subsystem. |
+| **[`SaveGaze-x86.apk`](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest/download/SaveGaze-x86.apk)** | `x86` | For legacy 32-bit x86 emulators. |
 
 ---
 
@@ -122,12 +122,12 @@ SaveGaze is distributed with dedicated builds for every Android architecture as 
 Run the following command from the project root:
 
 ```bash
-./gradlew :app:assembleDebug
+./gradlew :app:assembleRelease
 ```
 
-The compiled APKs for all architectures are generated at:
+The compiled R8-shrunk APKs for all architectures are generated at:
 ```
-app/build/outputs/apk/debug/
+app/build/outputs/apk/release/
 ├── SaveGaze.apk              # Universal build (all architectures)
 ├── SaveGaze-arm64-v8a.apk    # 64-bit ARM
 ├── SaveGaze-armeabi-v7a.apk  # 32-bit ARM
@@ -140,10 +140,10 @@ Connect your Android 9+ (API 28+) device via USB (or start an AVD emulator) and 
 
 ```bash
 # Universal (works on any device)
-adb install -r SaveGaze.apk
+adb install -r app/build/outputs/apk/release/SaveGaze.apk
 
 # Or install the targeted architecture directly:
-adb install -r release/SaveGaze-arm64-v8a.apk
+adb install -r app/build/outputs/apk/release/SaveGaze-arm64-v8a.apk
 ```
 
 ---

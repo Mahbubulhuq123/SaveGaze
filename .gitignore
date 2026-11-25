@@ -1,12 +1,8 @@
-# Built application files
+# Built application files (distributed via GitHub Releases, not Git commits)
 *.apk
 *.aar
 *.ap_
 *.aab
-
-# Track official release APKs for every architecture
-!/SaveGaze.apk
-!/release/*.apk
 
 # Files for the ART/Dalvik VM
 *.dex
