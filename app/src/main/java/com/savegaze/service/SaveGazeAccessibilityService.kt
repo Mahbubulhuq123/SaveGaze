@@ -121,6 +121,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private var activeBlurBoxes: List<BoundingBox> = emptyList()
     private var lastScreenSignature: IntArray? = null
     private var lastGenderFilter: GenderFilter? = null
+    private var lastForegroundPackage: String? = null
     private var userJustScrolled = false
     private var lastScrollTimestamp = 0L
     private var lastContentTriggerMs = 0L
@@ -332,10 +333,19 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
             checkContentGuardWindow(pkg, forceCheck = true)
 
-            trackedBoxes.clear()
-            activeBlurBoxes = emptyList()
-            lastScreenSignature = null
-            overlayManager?.clearBlurRegions()
+            val isIme = pkg.contains("inputmethod", ignoreCase = true) ||
+                pkg.contains("keyboard", ignoreCase = true) ||
+                pkg.contains("gboard", ignoreCase = true)
+            if (!isIme && pkg.isNotBlank() && pkg != lastForegroundPackage) {
+                val switchedApp = lastForegroundPackage != null
+                lastForegroundPackage = pkg
+                if (switchedApp) {
+                    trackedBoxes.clear()
+                    activeBlurBoxes = emptyList()
+                    lastScreenSignature = null
+                    overlayManager?.clearBlurRegions()
+                }
+            }
             serviceScope.launch {
                 if (preferencesManager?.getIsEnabled() == true) performScan()
             }
@@ -799,21 +809,25 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         }
 
         if (candidateBoxes.isEmpty() && matchingFaces.isEmpty()) {
-            if (didScroll || isSceneCut) {
+            if (isSceneCut) {
                 userJustScrolled = false
                 trackedBoxes.clear()
                 return emptyList()
             }
-            if (isStaticScreen && oppositeFaces.isEmpty() && trackedBoxes.isNotEmpty()) {
+            if (isStaticScreen && !didScroll && oppositeFaces.isEmpty() && trackedBoxes.isNotEmpty()) {
                 trackedBoxes.forEach { it.lastSeenMs = now }
                 return trackedBoxes.map { it.box }
             }
-            val holdMs = if (isStaticScreen) 2200L else 700L
+            val holdMs = when {
+                didScroll -> 380L
+                isStaticScreen -> 2200L
+                else -> 900L
+            }
             trackedBoxes.removeAll { now - it.lastSeenMs > holdMs }
             return trackedBoxes.map { it.box }
         }
 
-        if (didScroll && candidateBoxes.isEmpty()) {
+        if (isSceneCut && candidateBoxes.isEmpty()) {
             userJustScrolled = false
             trackedBoxes.clear()
             return emptyList()
@@ -848,17 +862,34 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val t = trackedBoxes[bestIdx]
                 t.lastSeenMs = now
                 if (nearFace != null) t.associatedFace = nearFace
-                val alpha = if (isStaticScreen) 0.30f else 0.65f
-                val cx = t.box.centerX * (1f - alpha) + cand.centerX * alpha
-                val cy = t.box.centerY * (1f - alpha) + cand.centerY * alpha
-                val w = t.box.width * (1f - alpha) + cand.width * alpha
-                val h = t.box.height * (1f - alpha) + cand.height * alpha
-                t.box = BoundingBox(
-                    (cx - w / 2f).coerceIn(0f, screenW),
-                    (cy - h / 2f).coerceIn(0f, screenH),
-                    (cx + w / 2f).coerceIn(0f, screenW),
-                    (cy + h / 2f).coerceIn(0f, screenH)
+                val clampedCand = BoundingBox(
+                    cand.x1.coerceIn(0f, screenW),
+                    cand.y1.coerceIn(0f, screenH),
+                    cand.x2.coerceIn(0f, screenW),
+                    cand.y2.coerceIn(0f, screenH)
                 )
+                val deadband = if (isStaticScreen) 12f else 6f
+                val withinDeadband =
+                    abs(clampedCand.x1 - t.box.x1) <= deadband &&
+                    abs(clampedCand.y1 - t.box.y1) <= deadband &&
+                    abs(clampedCand.x2 - t.box.x2) <= deadband &&
+                    abs(clampedCand.y2 - t.box.y2) <= deadband
+                // Never shrink aggressively on a static screen when our own opaque overlay hides parts of the subject
+                val isOccludedShrink = isStaticScreen && !didScroll && !isSceneCut &&
+                    (clampedCand.width < t.box.width * 0.85f || clampedCand.height < t.box.height * 0.85f)
+                if (!withinDeadband && !isOccludedShrink) {
+                    val alpha = if (isStaticScreen) 0.30f else 0.65f
+                    val cx = t.box.centerX * (1f - alpha) + clampedCand.centerX * alpha
+                    val cy = t.box.centerY * (1f - alpha) + clampedCand.centerY * alpha
+                    val w = t.box.width * (1f - alpha) + clampedCand.width * alpha
+                    val h = t.box.height * (1f - alpha) + clampedCand.height * alpha
+                    t.box = BoundingBox(
+                        (cx - w / 2f).coerceIn(0f, screenW),
+                        (cy - h / 2f).coerceIn(0f, screenH),
+                        (cx + w / 2f).coerceIn(0f, screenW),
+                        (cy + h / 2f).coerceIn(0f, screenH)
+                    )
+                }
             } else {
                 trackedBoxes.add(
                     TrackedBox(
