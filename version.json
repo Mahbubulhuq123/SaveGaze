@@ -1,8 +1,8 @@
 {
   "versionCode": 10700,
   "versionName": "1.7",
-  "publishedAt": "2026-11-26T01:00:00Z",
-  "releaseNotes": "• Fix: Blur overlay no longer blinks or flickers — short-circuits redundant redraws and tightens box sizing.\n• Fix: Males no longer falsely blurred in Female-Only mode — tightened cross-gender NMS, added confidence-margin checks, gender-aware cluster seeding and body-part assignment.\n• Fix: Internet now works in all browsers — VPN sends TCP RST for DoT/TCP-DNS probes, binds upstream DNS to physical network, adds DoH fallback and DNS caching.",
+  "publishedAt": "2026-11-25T20:06:00Z",
+  "releaseNotes": "• Fix: Blur overlay no longer blinks or flickers — ignores same-app popups/IME, avoids false scroll wipes & occlusion shrinkage, and applies deadband lock.\n• Fix: Males no longer falsely blurred in Female-Only mode — tightened cross-gender NMS (IoU 0.60→0.28), added confidence-margin checks, gender-aware clustering, and opposite-gender box clamping.\n• Fix: Internet now works in all browsers — VPN sends TCP RST for DoT (:853) & TCP DNS (:53), binds upstream DNS to physical network, adds ISP DNS priority, DoH fallback, and DNS cache.",
   "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v1.7/SaveGaze-arm64-v8a.apk",
-  "apkSize": 42283119
+  "apkSize": 42293015
 }
