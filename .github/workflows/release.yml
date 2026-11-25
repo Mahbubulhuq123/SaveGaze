@@ -33,6 +33,9 @@ jobs:
       - name: Grant Gradle Wrapper execute permission
         run: chmod +x gradlew
 
+      - name: Clear Windows-specific JDK path for Linux runner
+        run: sed -i '/^org\.gradle\.java\.home=/d' gradle.properties
+
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
@@ -44,10 +47,14 @@ jobs:
             ${{ runner.os }}-gradle-
 
       - name: Restore consistent debug keystore (optional secret)
-        if: ${{ secrets.SIGNING_KEYSTORE_BASE64 != '' }}
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
         run: |
-          mkdir -p ~/.android
-          echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > ~/.android/debug.keystore
+          if [ -n "$SIGNING_KEYSTORE_BASE64" ]; then
+            mkdir -p ~/.android
+            printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
+            echo "HAS_SIGNING_KEYSTORE=true" >> "$GITHUB_ENV"
+          fi
 
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon
@@ -64,7 +71,7 @@ jobs:
             app/build/outputs/apk/release/output-metadata.json
 
       - name: Publish APKs to GitHub Release (when signing secret is configured)
-        if: startsWith(github.ref, 'refs/tags/v') && secrets.SIGNING_KEYSTORE_BASE64 != ''
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_SIGNING_KEYSTORE == 'true'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
