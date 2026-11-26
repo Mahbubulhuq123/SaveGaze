@@ -141,8 +141,8 @@ class GenderPersonDetector(
                     } else {
                         val candInsideExisting = cand.box.centerX in existing.box.x1..existing.box.x2 &&
                             cand.box.centerY in existing.box.y1..existing.box.y2 &&
-                            existing.confidence >= cand.confidence * 1.25f
-                        iou > 0.28f || candInsideExisting
+                            existing.confidence >= cand.confidence * 1.35f
+                        iou > 0.42f || candInsideExisting
                     }
                 }
                 if (!suppressed) {
@@ -179,14 +179,12 @@ class GenderPersonDetector(
             // 1. Global letterboxed pass
             all.addAll(runInference(bitmap, 0f, fullW, fullH))
 
-            // 2. Portrait mobile strips sized close to 544:320 aspect so multi-image grids stay sharp
+            // 2. Portrait mobile halves (58% overlapping strips) keep grids sharp at ~40% lower latency than 4 strips
             if (aspectRatio > 1.35f && fullH > 600f) {
-                val stripH = (fullH * 0.36f).toInt().coerceAtLeast(1)
+                val stripH = (fullH * 0.56f).toInt().coerceAtLeast(1)
                 val offsets = intArrayOf(
                     0,
-                    (fullH * 0.22f).toInt(),
-                    (fullH * 0.44f).toInt(),
-                    (fullH * 0.64f).toInt()
+                    (fullH * 0.44f).toInt()
                 )
                 for (yOff in offsets) {
                     val safeH = minOf(stripH, bitmap.height - yOff)

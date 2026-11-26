@@ -231,4 +231,77 @@ class IntimateGuardRulesTest {
         assertFalse(IntimateExitRules.shouldAutoCastAudio("com.facebook.katana", setOf("fb_shorts"), true, true, true))
         assertFalse(IntimateExitRules.shouldAutoCastAudio("com.zhiliaoapp.musically", emptySet(), true, true, true))
     }
+
+    @Test
+    fun mobileClipScoringDistinguishesKissingFromSfwDialogue() {
+        val prompts = arrayOf(
+            floatArrayOf(1f, 0f, 0f, 0f),
+            floatArrayOf(0.8f, 0.6f, 0f, 0f),
+            floatArrayOf(0f, 0f, 1f, 0f),
+            floatArrayOf(0f, 0f, 0.8f, 0.6f)
+        )
+        val kissEmb = floatArrayOf(0.95f, 0.25f, 0.10f, 0.0f)
+        val kissScore = MobileClipIntimateRules.score(kissEmb, prompts, positiveCount = 2)
+        assertTrue(kissScore.intimateProb >= 0.72f)
+        assertTrue(kissScore.margin >= 0.025f)
+
+        val talkEmb = floatArrayOf(0.05f, 0.05f, 0.96f, 0.20f)
+        val talkScore = MobileClipIntimateRules.score(talkEmb, prompts, positiveCount = 2)
+        assertTrue(talkScore.intimateProb < 0.30f)
+        assertTrue(talkScore.margin < 0f)
+    }
+
+    @Test
+    fun clothedMovieKissWithMobileClipTriggersWithoutNsfwScore() {
+        // Clothed PG-13 movie kissing (SwiftFormer scores nsfw=0.05, NudeNet sees only two close faces)
+        val leftFace = Detection(NudeLabel.FACE_MALE, 0.82f, BoundingBox(420f, 180f, 660f, 440f))
+        val rightFace = Detection(NudeLabel.FACE_FEMALE, 0.85f, BoundingBox(650f, 190f, 890f, 450f))
+
+        val sfwDialogue = IntimateSceneRules.evaluate(
+            detections = listOf(leftFace, rightFace),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.05f, sfw = 0.95f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2400f,
+            screenH = 1080f,
+            sensitivity = 0.25f,
+            clipKissProb = 0.28f,
+            clipMargin = -0.02f
+        )
+        assertFalse(sfwDialogue.triggered)
+
+        val clipKiss = IntimateSceneRules.evaluate(
+            detections = listOf(leftFace, rightFace),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.05f, sfw = 0.95f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2400f,
+            screenH = 1080f,
+            sensitivity = 0.25f,
+            clipKissProb = 0.80f,
+            clipMargin = 0.04f
+        )
+        assertTrue(clipKiss.triggered)
+        assertTrue(clipKiss.reason.contains("CLIP"))
+    }
+
+    @Test
+    fun cloudstreamAndNuvioClassifiedAsDedicatedStreamingPlayers() {
+        for (pkg in listOf("com.nuvio.app", "com.lagradost.cloudstream3")) {
+            val ctx = IntimateExitRules.classifyContext(
+                packageName = pkg,
+                treeHints = emptySet(),
+                hasSeekBarOrPlayerControls = false,
+                isLandscape = true
+            )
+            assertEquals(MediaAppContext.MOVIE_SERIES_PLAYER, ctx)
+            assertEquals(
+                ExitActionType.SKIP_SCENE_FORWARD,
+                IntimateExitRules.chooseAction(ctx, IntimateActionMode.SMART_CONTEXT, 0)
+            )
+            assertTrue(IntimateExitRules.shouldAutoCastAudio(pkg, emptySet(), false, true, true))
+        }
+    }
 }

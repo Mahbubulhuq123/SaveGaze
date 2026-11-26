@@ -9,7 +9,7 @@ import android.util.Log
 import com.savegaze.util.findMediaContainerBottom
 import com.savegaze.util.getSkinFraction
 import com.savegaze.util.hasHumanSkin
-import com.savegaze.util.toFloatBuffer
+import com.savegaze.util.toTopLeftLetterboxFloatBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -51,11 +51,11 @@ class NudeNetDetector(
                 it.label == NudeLabel.FEMALE_GENITALIA_EXPOSED && it.confidence >= 0.42f
             }
             val hasBareFemaleBreast = intimateDetections.any {
-                it.label == NudeLabel.FEMALE_BREAST_EXPOSED && it.confidence >= 0.36f
+                it.label == NudeLabel.FEMALE_BREAST_EXPOSED && it.confidence >= 0.40f
             }
             val hasMaleAnatomy = intimateDetections.any {
                 it.label == NudeLabel.MALE_GENITALIA_EXPOSED ||
-                    (it.label == NudeLabel.MALE_BREAST_EXPOSED && it.confidence >= 0.25f)
+                    (it.label == NudeLabel.MALE_BREAST_EXPOSED && it.confidence >= 0.28f)
             }
             val hasFemaleFace = faces.any { it.label == NudeLabel.FACE_FEMALE }
             val hasMaleFace = faces.any { it.label == NudeLabel.FACE_MALE }
@@ -64,29 +64,24 @@ class NudeNetDetector(
             if (hasMaleAnatomy && !hasStrongFemaleGen) return ClusterGender.MALE
             if (hasStrongFemaleGen && !hasMaleAnatomy) return ClusterGender.FEMALE
 
-            // 2. Hybrid PordaV4x3 person/gender detector takes precedence over noisy NudeNet breast hallucinations
+            // 2. Hybrid PordaV4x3 person/gender detector takes precedence over noisy NudeNet hallucinations
             val bestPerson = primaryPersonBox
             if (bestPerson != null && bestPerson.confidence >= 0.24f) {
                 val margin = bestPerson.confidence - bestPerson.oppositeConfidence
                 val isCloseTie = bestPerson.oppositeConfidence > 0f && margin < 0.14f && bestPerson.confidence < 0.48f
                 if (bestPerson.gender == PersonGender.MALE) {
-                    val hasStrongFemaleCovered = intimateDetections.any {
-                        (it.label == NudeLabel.FEMALE_BREAST_COVERED || it.label == NudeLabel.FEMALE_GENITALIA_COVERED) &&
-                            it.confidence >= 0.42f
-                    }
-                    val contradictedByFemale = hasBareFemaleBreast ||
-                        (hasFemaleFace && !hasMaleFace && (isCloseTie || bestPerson.confidence < 0.45f)) ||
-                        (hasStrongFemaleCovered && !hasMaleFace && !hasMaleAnatomy && (isCloseTie || bestPerson.confidence < 0.42f))
+                    val contradictedByFemale = (hasBareFemaleBreast && !hasMaleFace && (isCloseTie || bestPerson.confidence < 0.48f)) ||
+                        (hasFemaleFace && !hasMaleFace && (isCloseTie || bestPerson.confidence < 0.45f))
                     if (!contradictedByFemale) {
                         return ClusterGender.MALE
                     }
                 } else {
-                    // Guard against near-tie PordaV4x3 FEMALE predictions contradicted by FACE_MALE
-                    if (hasMaleFace && !hasFemaleFace && (isCloseTie || bestPerson.confidence < 0.42f)) {
+                    // Only override Porda FEMALE if FACE_MALE strongly contradicts a weak/tied prediction
+                    if (hasMaleFace && !hasFemaleFace && (isCloseTie || bestPerson.confidence < 0.40f)) {
                         return ClusterGender.MALE
                     }
                     if (bestPerson.oppositeConfidence > 0f && margin < 0.06f && bestPerson.confidence < 0.45f) {
-                        // Too close to call by Porda alone; fall through to face & anatomy cues
+                        // Ambiguous tie; fall through to face & anatomy cues
                     } else {
                         return ClusterGender.FEMALE
                     }
@@ -194,12 +189,28 @@ class NudeNetDetector(
                 det.label in NSFW_LABELS && allFaces.none { face -> det.box.iou(face.box) > 0.35f }
             }
 
-            // Skin chrominance gate eliminates modest shirts / non-skin false positives
+            // Skin chrominance gate eliminates modest shirts / non-skin / non-living false positives
             val validNsfwParts = if (bitmap != null) {
                 rawNsfwParts.filter { det ->
+                    val nearFace = allFaces.any { f ->
+                        abs(f.box.centerX - det.box.centerX) < maxOf(f.box.width * 2.5f, det.box.width * 1.5f)
+                    }
+                    val nearPerson = personDetections.any { p -> det.box.iou(p.box) > 0.08f }
+                    val contextBox = BoundingBox(
+                        (det.box.x1 - det.box.width * 0.15f).coerceAtLeast(0f),
+                        (det.box.y1 - det.box.height * 0.15f).coerceAtLeast(0f),
+                        det.box.x2 + det.box.width * 0.15f,
+                        det.box.y2 + det.box.height * 0.15f
+                    )
                     when (det.label) {
-                        NudeLabel.FEMALE_BREAST_COVERED -> det.confidence >= 0.34f || bitmap.getSkinFraction(det.box) >= 0.10f
+                        NudeLabel.FEMALE_BREAST_COVERED ->
+                            (det.confidence >= 0.48f && (nearPerson || bitmap.hasHumanSkin(contextBox, 0.06f, nearFace))) ||
+                                (det.confidence >= 0.28f && bitmap.getSkinFraction(det.box) >= 0.12f)
                         NudeLabel.MALE_BREAST_EXPOSED -> bitmap.getSkinFraction(det.box) >= 0.22f
+                        NudeLabel.BUTTOCKS_COVERED,
+                        NudeLabel.FEMALE_GENITALIA_COVERED,
+                        NudeLabel.ANUS_COVERED ->
+                            det.confidence >= 0.30f && (nearPerson || bitmap.hasHumanSkin(contextBox, 0.05f, nearFace))
                         else -> true
                     }
                 }
@@ -252,7 +263,9 @@ class NudeNetDetector(
 
                 for (c in clusters) {
                     val isStrictMaleDet = det.label == NudeLabel.MALE_BREAST_EXPOSED || det.label == NudeLabel.MALE_GENITALIA_EXPOSED
-                    val isStrictFemaleDet = det.label == NudeLabel.FEMALE_GENITALIA_EXPOSED && det.confidence >= 0.42f
+                    val isStrictFemaleDet = (det.label == NudeLabel.FEMALE_GENITALIA_EXPOSED && det.confidence >= 0.38f) ||
+                        (det.label == NudeLabel.FEMALE_BREAST_EXPOSED && det.confidence >= 0.34f) ||
+                        (det.label == NudeLabel.FEMALE_BREAST_COVERED && det.confidence >= 0.30f)
                     val clusterIsConfirmedFemale = c.primaryPersonBox?.let { it.gender == PersonGender.FEMALE && it.confidence >= 0.50f } == true ||
                         c.faces.any { it.label == NudeLabel.FACE_FEMALE }
                     val clusterIsConfirmedMale = c.primaryPersonBox?.let { it.gender == PersonGender.MALE && it.confidence >= 0.50f } == true ||
@@ -394,6 +407,10 @@ class NudeNetDetector(
                                     it.label == NudeLabel.BUTTOCKS_EXPOSED ||
                                     it.label == NudeLabel.MALE_GENITALIA_EXPOSED
                             }
+                        } else if (g == ClusterGender.UNKNOWN && c.faces.isEmpty() && c.personBoxes.isEmpty()) {
+                            c.intimateDetections.any {
+                                it.label.isExposed && it.confidence >= 0.36f
+                            } || c.intimateDetections.any { it.confidence >= 0.55f }
                         } else {
                             true
                         }
@@ -406,23 +423,16 @@ class NudeNetDetector(
                                     it.label != NudeLabel.MALE_GENITALIA_EXPOSED
                             }
                         }
-                        // Unknown cluster (e.g., cropped/grid thumbnail without visible face): keep semi-nude female cues,
-                        // while still rejecting shirtless/shorts males without female anatomy.
-                        val hasFemaleAnatomy = c.intimateDetections.any {
-                            it.label == NudeLabel.FEMALE_BREAST_EXPOSED ||
-                                it.label == NudeLabel.FEMALE_GENITALIA_EXPOSED ||
-                                (it.label == NudeLabel.FEMALE_BREAST_COVERED && it.confidence >= 0.30f) ||
-                                (it.label == NudeLabel.FEMALE_GENITALIA_COVERED && it.confidence >= 0.28f)
-                        }
+                        // Unknown cluster (no Porda person & no face): strictly block non-living hallucinations & headless males
                         val hasStrongExplicitFemale = c.intimateDetections.any {
-                            (it.label == NudeLabel.FEMALE_BREAST_EXPOSED && it.confidence >= 0.34f) ||
-                                (it.label == NudeLabel.FEMALE_GENITALIA_EXPOSED && it.confidence >= 0.30f)
+                            (it.label == NudeLabel.FEMALE_BREAST_EXPOSED && it.confidence >= 0.38f) ||
+                                (it.label == NudeLabel.FEMALE_GENITALIA_EXPOSED && it.confidence >= 0.32f)
                         }
                         val hasMaleAnat = c.intimateDetections.any {
                             it.label == NudeLabel.MALE_BREAST_EXPOSED || it.label == NudeLabel.MALE_GENITALIA_EXPOSED
                         }
                         if (hasMaleAnat) return@filter false
-                        if (sceneHasMaleFace && !sceneHasFemaleFace && !hasFemaleAnatomy) return@filter false
+                        if (sceneHasMaleFace && !sceneHasFemaleFace && !hasStrongExplicitFemale) return@filter false
 
                         val semiCueCount = c.intimateDetections.count {
                             it.label == NudeLabel.BELLY_EXPOSED ||
@@ -432,10 +442,16 @@ class NudeNetDetector(
                                 it.label == NudeLabel.BUTTOCKS_EXPOSED ||
                                 it.label == NudeLabel.BUTTOCKS_COVERED
                         }
-                        hasStrongExplicitFemale || hasFemaleAnatomy || c.intimateDetections.any {
-                            (it.label == NudeLabel.BUTTOCKS_EXPOSED && it.confidence >= 0.32f) ||
-                                (it.label == NudeLabel.BUTTOCKS_COVERED && it.confidence >= 0.38f)
-                        } || (semiCueCount >= 2 && c.intimateDetections.any { it.label == NudeLabel.FEMALE_BREAST_COVERED || it.label == NudeLabel.BUTTOCKS_COVERED || it.label == NudeLabel.BUTTOCKS_EXPOSED })
+                        val maxFemaleCovered = c.intimateDetections
+                            .filter { it.label == NudeLabel.FEMALE_BREAST_COVERED || it.label == NudeLabel.FEMALE_GENITALIA_COVERED }
+                            .maxOfOrNull { it.confidence } ?: 0f
+
+                        hasStrongExplicitFemale ||
+                            maxFemaleCovered >= 0.65f ||
+                            c.intimateDetections.any { it.label == NudeLabel.BUTTOCKS_EXPOSED && it.confidence >= 0.42f } ||
+                            (semiCueCount >= 2 && c.intimateDetections.any {
+                                it.label == NudeLabel.FEMALE_BREAST_COVERED || it.label == NudeLabel.FEMALE_GENITALIA_COVERED
+                            })
                     }
                     GenderFilter.MALE_ONLY -> {
                         if (g == ClusterGender.FEMALE) return@filter false
@@ -459,7 +475,10 @@ class NudeNetDetector(
             val keptBodyFaces = keptBodyClusters.flatMap { it.faces }.toSet()
             val protectedFaces = when {
                 !blurFaces -> correctedFaces.map { f ->
-                    if (f in keptBodyFaces) {
+                    val inKeptBody = f in keptBodyFaces || keptBodyClusters.any { c ->
+                        c.allBoxes.any { b -> f.box.iou(b) > 0.04f }
+                    }
+                    if (inKeptBody) {
                         // Protect eyes/nose/upper face while letting body blur cover throat/neck up to the jawline
                         val jawBottom = (f.box.y2 - f.box.height * 0.14f)
                             .coerceAtLeast(f.box.y1 + f.box.height * 0.72f)
@@ -531,13 +550,18 @@ class NudeNetDetector(
                         val bottomY = maxOf(partMaxY + 15f, minOf(naturalBottomY, containerBottom))
                         BoundingBox(left, topY, right, bottomY)
                     } else if (pBox != null) {
+                        val topPart = partsInCluster.minByOrNull { it.box.y1 }!!
+                        val topPartH = maxOf(topPart.box.height, 1f)
                         val padX = maxOf(pBox.width * 0.06f, 12f)
                         val left = minOf(pBox.x1 - padX, partMinX - 12f).coerceAtLeast(0f)
                         val right = maxOf(pBox.x2 + padX, partMaxX + 12f)
                         val topY = if (blurFaces) {
                             (pBox.y1 - pBox.height * 0.05f).coerceAtLeast(0f)
                         } else {
-                            minOf(pBox.y1, partMinY - 12f).coerceAtLeast(0f)
+                            minOf(
+                                pBox.y1 + pBox.height * 0.15f,
+                                partMinY - maxOf(topPartH * 0.75f, 18f)
+                            ).coerceAtLeast(0f)
                         }
                         val naturalBottomY = maxOf(pBox.y2 + 12f, partMaxY + 24f)
                         val containerBottom = bitmap?.findMediaContainerBottom(partMaxY, clusterBounds) ?: Float.MAX_VALUE
@@ -565,7 +589,7 @@ class NudeNetDetector(
                         val topY = when {
                             hasBacksideOnly -> (partMinY - topPartH * 2.2f).coerceAtLeast(0f)
                             blurFaces && hasUpperChest -> (partMinY - topPartH * 1.45f).coerceAtLeast(0f)
-                            hasUpperChest -> (partMinY - topPartH * 0.78f).coerceAtLeast(0f)
+                            hasUpperChest -> (partMinY - topPartH * 0.95f).coerceAtLeast(0f)
                             else -> (partMinY - topPartH * 1.25f).coerceAtLeast(0f)
                         }
                         val naturalBottomY = partMaxY + partH * 0.45f
@@ -713,37 +737,47 @@ class NudeNetDetector(
             val aspectRatio = originalHeight / originalWidth
             val allDetections = mutableListOf<Detection>()
 
-            // 1. Global pass
-            allDetections.addAll(runInference(bitmap, 0f, 0f, originalWidth, originalHeight))
+            // 1. Global letterboxed pass
+            allDetections.addAll(runInference(bitmap, 0f, 0f))
 
-            // 2. Overlapping 2x2 quadrant tiles on tall mobile screens (gated on adaptive cadence for battery efficiency)
-            val shouldRunTiles = includeQuadrants || allDetections.size >= 2
+            // 2. Aspect-preserving 2-tile split (portrait vertical halves for grids, landscape horizontal halves for 21:9 movies)
+            val shouldRunTiles = includeQuadrants || allDetections.size >= 2 || (aspectRatio < 0.78f)
             if (shouldRunTiles && aspectRatio > 1.30f && originalHeight > 600f) {
-                val quadW = (originalWidth * 0.58f).toInt().coerceAtLeast(1)
-                val rightX = (originalWidth * 0.42f).toInt().coerceIn(0, bitmap.width - 1)
-                val rightW = (bitmap.width - rightX).coerceAtLeast(1)
-                val quadH = (originalHeight * 0.54f).toInt().coerceAtLeast(1)
-                val botY = (originalHeight * 0.46f).toInt().coerceIn(0, bitmap.height - 1)
-                val botH = (bitmap.height - botY).coerceAtLeast(1)
-
+                val stripH = (originalHeight * 0.58f).toInt().coerceAtLeast(1)
+                val botY = (originalHeight * 0.42f).toInt().coerceIn(0, bitmap.height - 1)
                 val tiles = listOf(
-                    intArrayOf(0, 0, quadW, quadH),
-                    intArrayOf(rightX, 0, rightW, quadH),
-                    intArrayOf(0, botY, quadW, botH),
-                    intArrayOf(rightX, botY, rightW, botH)
+                    intArrayOf(0, 0, bitmap.width, stripH),
+                    intArrayOf(0, botY, bitmap.width, bitmap.height - botY)
                 )
                 for (t in tiles) {
-                    val xOff = t[0]
-                    val yOff = t[1]
-                    val w = minOf(t[2], bitmap.width - xOff)
-                    val h = minOf(t[3], bitmap.height - yOff)
+                    val w = t[2]
+                    val h = minOf(t[3], bitmap.height - t[1])
                     if (w <= 32 || h <= 32) continue
                     try {
-                        val tile = Bitmap.createBitmap(bitmap, xOff, yOff, w, h)
-                        allDetections.addAll(runInference(tile, xOff.toFloat(), yOff.toFloat(), w.toFloat(), h.toFloat()))
+                        val tile = Bitmap.createBitmap(bitmap, t[0], t[1], w, h)
+                        allDetections.addAll(runInference(tile, t[0].toFloat(), t[1].toFloat()))
                         tile.recycle()
                     } catch (e: Exception) {
-                        Log.w(TAG, "Tile inference skipped at x=$xOff,y=$yOff", e)
+                        Log.w(TAG, "Portrait tile skipped at y=${t[1]}", e)
+                    }
+                }
+            } else if (shouldRunTiles && aspectRatio < 0.78f && originalWidth > 600f) {
+                val stripW = (originalWidth * 0.58f).toInt().coerceAtLeast(1)
+                val rightX = (originalWidth * 0.42f).toInt().coerceIn(0, bitmap.width - 1)
+                val tiles = listOf(
+                    intArrayOf(0, 0, stripW, bitmap.height),
+                    intArrayOf(rightX, 0, bitmap.width - rightX, bitmap.height)
+                )
+                for (t in tiles) {
+                    val w = minOf(t[2], bitmap.width - t[0])
+                    val h = t[3]
+                    if (w <= 32 || h <= 32) continue
+                    try {
+                        val tile = Bitmap.createBitmap(bitmap, t[0], t[1], w, h)
+                        allDetections.addAll(runInference(tile, t[0].toFloat(), t[1].toFloat()))
+                        tile.recycle()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Landscape tile skipped at x=${t[0]}", e)
                     }
                 }
             }
@@ -754,21 +788,26 @@ class NudeNetDetector(
             consolidated.filter { det ->
                 if (det.label.isFace) {
                     true
-                } else if (det.label.isExposed) {
+                } else {
                     val hasNearFace = allFaces.any { f ->
                         abs(f.box.centerX - det.box.centerX) < maxOf(f.box.width * 2.5f, det.box.width * 1.5f) &&
                             det.box.y1 >= f.box.y1 - 10f && det.box.y1 <= f.box.y2 + f.box.height * 6.0f
                     }
-                    bitmap.hasHumanSkin(
-                        det.box,
-                        minFraction = if (hasNearFace) 0.05f else 0.15f,
-                        hasNearFace = hasNearFace
-                    )
-                } else {
-                    if (allFaces.isEmpty()) {
-                        bitmap.hasHumanSkin(det.box, minFraction = 0.08f, hasNearFace = false)
+                    if (det.label.isExposed) {
+                        bitmap.hasHumanSkin(
+                            det.box,
+                            minFraction = if (hasNearFace) 0.05f else 0.14f,
+                            hasNearFace = hasNearFace
+                        )
                     } else {
-                        true
+                        // Also enforce skin check on COVERED boxes (via 15% padded context ring so dark swimwear with nearby thighs/belly passes while non-living objects fail)
+                        val contextRing = BoundingBox(
+                            (det.box.x1 - det.box.width * 0.15f).coerceAtLeast(0f),
+                            (det.box.y1 - det.box.height * 0.15f).coerceAtLeast(0f),
+                            det.box.x2 + det.box.width * 0.15f,
+                            det.box.y2 + det.box.height * 0.15f
+                        )
+                        bitmap.hasHumanSkin(contextRing, minFraction = 0.05f, hasNearFace = hasNearFace)
                     }
                 }
             }
@@ -778,11 +817,9 @@ class NudeNetDetector(
     private fun runInference(
         tileBitmap: Bitmap,
         offsetX: Float,
-        offsetY: Float,
-        tileWidth: Float,
-        tileHeight: Float
+        offsetY: Float
     ): List<Detection> {
-        val floatBuffer = tileBitmap.toFloatBuffer(MODEL_WIDTH, MODEL_HEIGHT)
+        val (floatBuffer, scaleX, scaleY) = tileBitmap.toTopLeftLetterboxFloatBuffer(MODEL_WIDTH, MODEL_HEIGHT)
         val shape = longArrayOf(1, NUM_CHANNELS.toLong(), MODEL_HEIGHT.toLong(), MODEL_WIDTH.toLong())
         var inputTensor: OnnxTensor? = null
         return try {
@@ -796,7 +833,7 @@ class NudeNetDetector(
 
             @Suppress("UNCHECKED_CAST")
             val rawOutput = outputTensor.get().value as Array<Array<FloatArray>>
-            val detections = postProcess(rawOutput[0], tileWidth, tileHeight, offsetX, offsetY)
+            val detections = postProcess(rawOutput[0], scaleX, scaleY, offsetX, offsetY)
             results.close()
             detections
         } catch (e: Exception) {
@@ -809,13 +846,11 @@ class NudeNetDetector(
 
     private fun postProcess(
         output: Array<FloatArray>,
-        tileWidth: Float,
-        tileHeight: Float,
+        scaleX: Float,
+        scaleY: Float,
         offsetX: Float = 0f,
         offsetY: Float = 0f
     ): List<Detection> {
-        val scaleX = tileWidth / MODEL_WIDTH
-        val scaleY = tileHeight / MODEL_HEIGHT
         val candidates = mutableListOf<Detection>()
 
         for (i in 0 until NUM_PREDICTIONS) {
@@ -834,30 +869,30 @@ class NudeNetDetector(
                 }
             }
 
-            // Conservative fallback adjustment for NudeNet face bias
+            // Only override FACE_FEMALE to FACE_MALE when male face logit strongly matches (never flip clear 0.80+ female faces on 0.14 noise)
             val femaleFaceScore = output[4 + 1][i]
             val maleFaceScore = output[4 + 12][i]
-            if (bestClassIdx == 1 && (maleFaceScore >= femaleFaceScore * 0.55f || maleFaceScore >= 0.14f)) {
+            if (bestClassIdx == 1 && maleFaceScore >= femaleFaceScore * 0.92f && maleFaceScore >= 0.30f) {
                 bestClassIdx = 12
-                bestClassScore = maxOf(maleFaceScore, bestClassScore)
+                bestClassScore = maleFaceScore
             }
 
             val label = NudeLabel.fromIndex(bestClassIdx) ?: continue
             val minThreshold = when (label) {
                 NudeLabel.FACE_FEMALE -> 0.18f
-                NudeLabel.FACE_MALE -> 0.16f
+                NudeLabel.FACE_MALE -> 0.18f
                 NudeLabel.FEMALE_BREAST_EXPOSED,
-                NudeLabel.FEMALE_GENITALIA_EXPOSED,
+                NudeLabel.FEMALE_GENITALIA_EXPOSED -> minOf(confidenceThreshold, 0.16f)
                 NudeLabel.BUTTOCKS_EXPOSED,
-                NudeLabel.ANUS_EXPOSED -> minOf(confidenceThreshold, 0.14f)
-                NudeLabel.FEET_EXPOSED -> minOf(confidenceThreshold, 0.16f)
+                NudeLabel.ANUS_EXPOSED -> minOf(confidenceThreshold, 0.18f)
+                NudeLabel.FEET_EXPOSED -> minOf(confidenceThreshold, 0.22f)
                 NudeLabel.ARMPITS_EXPOSED,
-                NudeLabel.BELLY_EXPOSED -> minOf(confidenceThreshold, 0.15f)
+                NudeLabel.BELLY_EXPOSED -> minOf(confidenceThreshold, 0.20f)
                 NudeLabel.MALE_BREAST_EXPOSED,
-                NudeLabel.MALE_GENITALIA_EXPOSED -> minOf(confidenceThreshold, 0.16f)
+                NudeLabel.MALE_GENITALIA_EXPOSED -> minOf(confidenceThreshold, 0.18f)
                 NudeLabel.FEMALE_GENITALIA_COVERED,
-                NudeLabel.BUTTOCKS_COVERED -> minOf(confidenceThreshold, 0.20f)
-                NudeLabel.FEMALE_BREAST_COVERED -> minOf(confidenceThreshold, 0.22f)
+                NudeLabel.BUTTOCKS_COVERED -> minOf(confidenceThreshold, 0.24f)
+                NudeLabel.FEMALE_BREAST_COVERED -> minOf(confidenceThreshold, 0.24f)
                 else -> confidenceThreshold
             }
             if (bestClassScore < minThreshold) continue
@@ -915,9 +950,9 @@ class NudeNetDetector(
             NudeLabel.FEMALE_GENITALIA_EXPOSED -> Pair(w * 0.20f, h * 0.22f)
             NudeLabel.BELLY_EXPOSED -> Pair(w * 0.35f, h * 0.35f)
             NudeLabel.BUTTOCKS_COVERED,
-            NudeLabel.BUTTOCKS_EXPOSED -> Pair(w * 0.22f, h * 0.25f)
-            NudeLabel.ARMPITS_EXPOSED -> Pair(w * 0.65f, h * 0.60f)
-            NudeLabel.FEET_EXPOSED -> Pair(w * 0.35f, h * 0.70f)
+            NudeLabel.BUTTOCKS_EXPOSED -> Pair(w * 0.18f, h * 0.20f)
+            NudeLabel.ARMPITS_EXPOSED -> Pair(w * 0.30f, h * 0.30f)
+            NudeLabel.FEET_EXPOSED -> Pair(w * 0.20f, h * 0.25f)
             NudeLabel.MALE_BREAST_EXPOSED,
             NudeLabel.MALE_GENITALIA_EXPOSED -> Pair(w * 0.10f, h * 0.12f)
             NudeLabel.ANUS_COVERED,

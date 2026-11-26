@@ -73,14 +73,30 @@ object IntimateExitRules {
     private val DEDICATED_VIDEO_PLAYERS = setOf(
         "com.stremio.one",
         "org.stremio.app",
+        "com.nuvio.app",
+        "com.lagradost.cloudstream3",
+        "com.lagradost.cloudstream3.prerelease",
         "org.videolan.vlc",
         "com.mxtech.videoplayer.ad",
         "com.mxtech.videoplayer.pro",
         "com.plexapp.android",
         "org.xbmc.kodi",
         "com.brouken.player",
-        "is.xyz.mpv"
+        "is.xyz.mpv",
+        "com.instantbits.cast.webvideo",
+        "com.mb.android",
+        "org.jellyfin.mobile"
     )
+
+    private fun isDedicatedStreamingPkg(pkg: String): Boolean {
+        return pkg in DEDICATED_VIDEO_PLAYERS ||
+            pkg.contains("stremio") ||
+            pkg.contains("nuvio") ||
+            pkg.contains("cloudstream") ||
+            pkg.contains("mxtech.videoplayer") ||
+            pkg.contains("aniyomi") ||
+            pkg.contains("dantotsu")
+    }
 
     private val SOCIAL_EXCLUDED_AUDIO_CAST = TIKTOK_PACKAGES + INSTAGRAM_PACKAGES + FACEBOOK_PACKAGES + setOf(
         "com.reddit.frontpage",
@@ -133,7 +149,7 @@ object IntimateExitRules {
             return if (looksLikeReel) MediaAppContext.REELS_SHORT else MediaAppContext.BROWSER_OR_GENERAL
         }
 
-        if (pkg in DEDICATED_VIDEO_PLAYERS || pkg.contains("stremio") || pkg.contains("nuvio")) {
+        if (isDedicatedStreamingPkg(pkg)) {
             return MediaAppContext.MOVIE_SERIES_PLAYER
         }
 
@@ -188,11 +204,7 @@ object IntimateExitRules {
         val pkg = packageName.lowercase()
         if (pkg.isBlank() || pkg in SOCIAL_EXCLUDED_AUDIO_CAST) return false
 
-        if (pkg in DEDICATED_VIDEO_PLAYERS ||
-            pkg.contains("stremio") ||
-            pkg.contains("nuvio") ||
-            pkg.contains("mxtech.videoplayer")
-        ) {
+        if (isDedicatedStreamingPkg(pkg)) {
             return true
         }
 

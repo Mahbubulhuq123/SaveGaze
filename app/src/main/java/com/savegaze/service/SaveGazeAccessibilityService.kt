@@ -48,6 +48,7 @@ import com.savegaze.guard.ContentGuardRules
 import com.savegaze.ml.AudioIntimateDetector
 import com.savegaze.ml.AudioIntimateResult
 import com.savegaze.ml.BoundingBox
+import com.savegaze.ml.ClipIntimateScore
 import com.savegaze.ml.Detection
 import com.savegaze.ml.GenderFilter
 import com.savegaze.ml.GenderPersonDetector
@@ -55,6 +56,7 @@ import com.savegaze.ml.IntimateCaptionRules
 import com.savegaze.ml.IntimateSceneDetector
 import com.savegaze.ml.IntimateSceneRules
 import com.savegaze.ml.IntimateSignals
+import com.savegaze.ml.MobileClipIntimateDetector
 import com.savegaze.ml.NudeNetDetector
 import com.savegaze.ml.PersonGenderBox
 import com.savegaze.ml.SceneSafetyScores
@@ -150,6 +152,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private var genderPersonDetector: GenderPersonDetector? = null
     private var intimateSceneDetector: IntimateSceneDetector? = null
     private var audioIntimateDetector: AudioIntimateDetector? = null
+    private var mobileClipDetector: MobileClipIntimateDetector? = null
     private var overlayManager: OverlayManager? = null
     private var preferencesManager: PreferencesManager? = null
 
@@ -204,6 +207,10 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     @Volatile private var lastTreeHints: Set<String> = emptySet()
     @Volatile private var lastHasSeekBarOrPlayer = false
     @Volatile private var lastSceneSafety: SceneSafetyScores? = null
+    @Volatile private var lastClipScore: ClipIntimateScore? = null
+    @Volatile private var lastClipScoredMs = 0L
+    private var lastClipLaunchMs = 0L
+    private val clipInferenceInFlight = AtomicBoolean(false)
     @Volatile private var lastAudioResult = AudioIntimateResult(0f, "", 0f, false)
     @Volatile private var lastAudioScoredMs = 0L
     private var lastFullInferenceMs = 0L
@@ -267,6 +274,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }.getOrNull()
                     audioIntimateDetector = runCatching {
                         AudioIntimateDetector(this@SaveGazeAccessibilityService)
+                    }.getOrNull()
+                    mobileClipDetector = runCatching {
+                        MobileClipIntimateDetector(this@SaveGazeAccessibilityService)
                     }.getOrNull()
                     detector = NudeNetDetector(this@SaveGazeAccessibilityService)
                 }
@@ -1191,10 +1201,42 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 activePkg.contains("launcher", ignoreCase = true)
 
             if (intimateGuardEnabled && !skipIntimateExit && !intimateActionInProgress.get()) {
+                val clipDetector = mobileClipDetector
+                val isLandscapeFrame = bWidth > bHeight
+                val activeContext = IntimateExitRules.classifyContext(
+                    activePkg, lastTreeHints, lastHasSeekBarOrPlayer, isLandscapeFrame
+                )
+                if (clipDetector != null &&
+                    !screenChange.isStatic &&
+                    (activeContext != MediaAppContext.BROWSER_OR_GENERAL || lastHasSeekBarOrPlayer || isLandscapeFrame) &&
+                    now - lastClipLaunchMs >= 950L &&
+                    clipInferenceInFlight.compareAndSet(false, true)
+                ) {
+                    lastClipLaunchMs = now
+                    val clipCrop = createCenterSquareClipCrop(bitmap)
+                    if (clipCrop != null) {
+                        serviceScope.launch(Dispatchers.Default) {
+                            try {
+                                val score = clipDetector.classify(clipCrop)
+                                if (score != null) {
+                                    lastClipScore = score
+                                    lastClipScoredMs = System.currentTimeMillis()
+                                }
+                            } finally {
+                                if (!clipCrop.isRecycled) clipCrop.recycle()
+                                clipInferenceInFlight.set(false)
+                            }
+                        }
+                    } else {
+                        clipInferenceInFlight.set(false)
+                    }
+                }
+
                 val audioActive = intimateAudioEnabled || (autoMovieAudioCastEnabled && mediaProjection != null)
                 val freshAudioScore = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.score else 0f
                 val freshAudioLabel = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.topLabel else ""
                 val evalSafety = sceneSafety ?: if (!lastScreenIsStatic) null else lastSceneSafety
+                val freshClip = lastClipScore?.takeIf { now - lastClipScoredMs < 2_400L }
                 val signals = IntimateSceneRules.evaluate(
                     detections = detections,
                     personBoxes = personBoxes,
@@ -1203,7 +1245,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     audioLabel = freshAudioLabel,
                     screenW = bWidth,
                     screenH = bHeight,
-                    sensitivity = sensitivity
+                    sensitivity = sensitivity,
+                    clipKissProb = freshClip?.intimateProb ?: 0f,
+                    clipMargin = freshClip?.margin ?: 0f
                 )
                 if (signals.triggered) {
                     consecutiveIntimateHits++
@@ -1332,7 +1376,11 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val isOccludedShrink = isStaticScreen && !didScroll && !isSceneCut &&
                     (clampedCand.width < t.box.width * 0.85f || clampedCand.height < t.box.height * 0.85f)
                 if (!withinDeadband && !isOccludedShrink) {
-                    val alpha = if (isStaticScreen) 0.30f else 0.65f
+                    val alpha = when {
+                        isStaticScreen -> 0.45f
+                        isSceneCut || bestScore < 0.35f -> 1.0f
+                        else -> 0.85f
+                    }
                     val cx = t.box.centerX * (1f - alpha) + clampedCand.centerX * alpha
                     val cy = t.box.centerY * (1f - alpha) + clampedCand.centerY * alpha
                     val w = t.box.width * (1f - alpha) + clampedCand.width * alpha
@@ -1417,7 +1465,25 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         }
         if (totalValid < 8) return ScreenChangeResult(isStatic = true, isSceneCut = false)
         val rate = totalMatches.toFloat() / totalValid.toFloat()
-        return ScreenChangeResult(isStatic = rate >= 0.88f, isSceneCut = rate < 0.30f)
+        return ScreenChangeResult(isStatic = rate >= 0.96f, isSceneCut = rate < 0.30f)
+    }
+
+    private fun createCenterSquareClipCrop(source: Bitmap): Bitmap? {
+        return try {
+            val cropSize = minOf(source.width, source.height).coerceAtLeast(1)
+            val cropX = ((source.width - cropSize) / 2).coerceAtLeast(0)
+            val cropY = ((source.height - cropSize) / 2).coerceAtLeast(0)
+            val square = Bitmap.createBitmap(source, cropX, cropY, cropSize, cropSize)
+            if (cropSize == 256) {
+                square
+            } else {
+                val scaled = Bitmap.createScaledBitmap(square, 256, 256, true)
+                square.recycle()
+                scaled
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun triggerIntimateAction(signals: com.savegaze.ml.IntimateSignals) {
@@ -1677,6 +1743,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         intimateSceneDetector = null
         try { audioIntimateDetector?.close() } catch (e: Exception) { Log.e(TAG, "Error closing AudioIntimateDetector", e) }
         audioIntimateDetector = null
+        try { mobileClipDetector?.close() } catch (e: Exception) { Log.e(TAG, "Error closing MobileClipIntimateDetector", e) }
+        mobileClipDetector = null
 
         serviceScope.cancel()
         publishHealth { ProtectionHealth() }

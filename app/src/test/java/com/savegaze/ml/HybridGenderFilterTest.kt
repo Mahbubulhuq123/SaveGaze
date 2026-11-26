@@ -173,4 +173,35 @@ class HybridGenderFilterTest {
         assertTrue("Bottom-right woman must be blurred", filtered.mergedBlurBoxes.any { it.centerX > 520f && it.centerY > 650f })
         assertFalse("Top-left male avatar must NOT be blurred", filtered.mergedBlurBoxes.any { it.centerX < 480f && it.centerY < 600f })
     }
+
+    @Test
+    fun femaleOnlyRejectsIsolatedUnknownCoveredObjectAndBlursFemaleNeckUpward() {
+        // Non-living sofa/shirt hallucination (COVERED label, no face, no person box) must NOT blur in FEMALE_ONLY
+        val sofaCovered = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.58f, BoundingBox(700f, 800f, 880f, 940f))
+        val nonLivingFiltered = NudeNetDetector.filterDetectionsPure(
+            detections = listOf(sofaCovered),
+            personDetections = emptyList(),
+            genderFilter = GenderFilter.FEMALE_ONLY,
+            blurFaces = false
+        )
+        assertFalse(nonLivingFiltered.hasNsfwContent)
+        assertTrue(nonLivingFiltered.mergedBlurBoxes.isEmpty())
+
+        // Female upper body with face (blurFaces=false) must extend cleanly toward jaw/neck without touching the face
+        val womanBox = PersonGenderBox(PersonGender.FEMALE, 0.85f, BoundingBox(80f, 60f, 520f, 920f), 0.05f)
+        val womanFace = Detection(NudeLabel.FACE_FEMALE, 0.86f, BoundingBox(220f, 80f, 360f, 220f))
+        val womanChest = Detection(NudeLabel.FEMALE_BREAST_EXPOSED, 0.65f, BoundingBox(180f, 310f, 420f, 470f))
+        val maleBox = PersonGenderBox(PersonGender.MALE, 0.88f, BoundingBox(600f, 70f, 980f, 920f), 0.04f)
+        val maleChestCovered = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.52f, BoundingBox(690f, 290f, 880f, 440f))
+
+        val femaleFiltered = NudeNetDetector.filterDetectionsPure(
+            detections = listOf(womanFace, womanChest, maleChestCovered),
+            personDetections = listOf(womanBox, maleBox),
+            genderFilter = GenderFilter.FEMALE_ONLY,
+            blurFaces = false
+        )
+        assertTrue(femaleFiltered.hasNsfwContent)
+        assertTrue("Female torso blur must reach near jawline/neck", femaleFiltered.mergedBlurBoxes.any { it.centerX < 520f && it.y1 <= womanFace.box.y2 + 30f })
+        assertFalse("Confident male torso covered must NOT be blurred", femaleFiltered.mergedBlurBoxes.any { it.centerX > 560f })
+    }
 }

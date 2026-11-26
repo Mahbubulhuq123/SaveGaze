@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -60,6 +61,11 @@ class OverlayManager(private val context: Context) {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
         }
 
     fun setOnVisibilityChangedListener(listener: ((Boolean) -> Unit)?) {
@@ -379,6 +385,7 @@ class OverlayManager(private val context: Context) {
         private var blurFaces: Boolean = false
 
         private val rectF = RectF()
+        private val screenLoc = IntArray(2)
         private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
         private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -440,6 +447,10 @@ class OverlayManager(private val context: Context) {
             val viewWidth = width.toFloat()
             val viewHeight = height.toFloat()
             canvas.save()
+            getLocationOnScreen(screenLoc)
+            if (screenLoc[0] != 0 || screenLoc[1] != 0) {
+                canvas.translate(-screenLoc[0].toFloat(), -screenLoc[1].toFloat())
+            }
 
             // Hardware clip strictly protects only faces in `faces` (none for target gender when blurFaces=true).
             if (faces.isNotEmpty()) {

@@ -277,9 +277,41 @@ fun stackBlur(pixels: IntArray, width: Int, height: Int, radius: Int) {
     }
 }
 
+private fun isRedOnionPixel(r: Int, g: Int, b: Int): Boolean =
+    (r in 110..220) && (g in 20..85) && (b in 20..95) && ((r - g) > 65)
+
+private fun isHumanSkinPixel(r: Int, g: Int, b: Int): Boolean {
+    if (isRedOnionPixel(r, g, b)) return false
+    val maxC = maxOf(r, g, b)
+    val minC = minOf(r, g, b)
+    val chroma = maxC - minC
+    // Reject neutral grays, white walls, silver furniture, and dark shadows
+    if (chroma < 12) return false
+
+    val cb = (-0.1687f * r - 0.3313f * g + 0.5000f * b + 128f).toInt()
+    val cr = (0.5000f * r - 0.4187f * g - 0.0813f * b + 128f).toInt()
+
+    // 1. Standard warm human skin cluster (light, olive, tan, South Asian, deep skin)
+    val isWarmSkin = (r > 32 && g > 20 && b > 14) &&
+        chroma >= 14 &&
+        (r > g && r > b && (r - g) >= 6) &&
+        (cb in 74..132) &&
+        (cr in 131..178)
+
+    // 2. Cool / neon / ambient lit human skin (strict chroma + non-green/non-gray guard)
+    val isCoolSkin = (r > 32 && g > 20 && b > 20) &&
+        chroma >= 14 &&
+        (cb in 82..156) &&
+        (cr in 122..170) &&
+        (r >= g * 0.88f) &&
+        !(g > r + 8 && g > b + 8)
+
+    return isWarmSkin || isCoolSkin
+}
+
 /**
  * Checks whether a candidate bounding box contains a minimum proportion of human skin chrominance.
- * Used to reject inanimate objects (wood carvings, furniture, pillows, vegetables/onions, wallpaper, plain fabrics).
+ * Used to reject inanimate objects (furniture, pillows, vegetables/onions, wallpaper, plain fabrics).
  */
 fun Bitmap.hasHumanSkin(
     box: BoundingBox,
@@ -297,7 +329,6 @@ fun Bitmap.hasHumanSkin(
     val regionH = bottom - top
     if (regionW < 4 || regionH < 4) return false
 
-    // Sample a grid of up to 14x14 points across the box
     val stepX = maxOf(1, regionW / 14)
     val stepY = maxOf(1, regionH / 14)
 
@@ -314,30 +345,8 @@ fun Bitmap.hasHumanSkin(
             val g = (pixel shr 8) and 0xFF
             val b = pixel and 0xFF
 
-            // Detect raw red/purple vegetable skins (e.g. red onions, beets):
-            // Red onions have hyper-saturated magenta/dark-red hue where R is high but G and B are deeply suppressed.
-            val isRedOnion = (r in 110..220) && (g in 20..85) && (b in 20..95) && ((r - g) > 65)
-            if (isRedOnion) onionCount++
-
-            // YCbCr skin formula:
-            val cb = (-0.1687f * r - 0.3313f * g + 0.5000f * b + 128f).toInt()
-            val cr = (0.5000f * r - 0.4187f * g - 0.0813f * b + 128f).toInt()
-
-            // 1. Standard warm human skin cluster (fair, olive, tan, south-asian, deep skin)
-            val isWarmSkin = (r > 40 && g > 25 && b > 15) &&
-                    (r > g && (r > b || (g - b) in -15..30)) &&
-                    (cb in 68..142) &&
-                    (cr in 126..180)
-
-            // 2. Cool / neon / club / car ambient lighting skin (e.g. music videos, blue/cyan backlight)
-            val isCoolSkin = (r > 35 && g > 25 && b > 25) &&
-                    (cb in 75..165) &&
-                    (cr in 115..172) &&
-                    (r >= g * 0.80f)
-
-            if (!isRedOnion && (isWarmSkin || isCoolSkin)) {
-                skinCount++
-            }
+            if (isRedOnionPixel(r, g, b)) onionCount++
+            if (isHumanSkinPixel(r, g, b)) skinCount++
             totalSampled++
             x += stepX
         }
@@ -345,11 +354,7 @@ fun Bitmap.hasHumanSkin(
     }
 
     if (totalSampled == 0) return false
-
-    // If more than 20% of the sample points are red onion peel and no face is attached, reject as onion!
-    if (onionCount.toFloat() / totalSampled.toFloat() > 0.20f && !hasNearFace) {
-        return false
-    }
+    if (onionCount.toFloat() / totalSampled.toFloat() > 0.20f && !hasNearFace) return false
 
     val skinFraction = skinCount.toFloat() / totalSampled.toFloat()
     val requiredFraction = if (hasNearFace) 0.04f else minFraction
@@ -358,8 +363,6 @@ fun Bitmap.hasHumanSkin(
 
 /**
  * Computes the exact fraction (0.0 to 1.0) of human skin within a bounding box.
- * Used to distinguish modest clothed shirts (< 15% skin) from low-cut cleavage or swimwear (>= 25%),
- * and shirtless males (>= 35% skin).
  */
 fun Bitmap.getSkinFraction(box: BoundingBox): Float {
     val bWidth = this.width
@@ -388,24 +391,7 @@ fun Bitmap.getSkinFraction(box: BoundingBox): Float {
             val g = (pixel shr 8) and 0xFF
             val b = pixel and 0xFF
 
-            val isRedOnion = (r in 110..220) && (g in 20..85) && (b in 20..95) && ((r - g) > 65)
-
-            val cb = (-0.1687f * r - 0.3313f * g + 0.5000f * b + 128f).toInt()
-            val cr = (0.5000f * r - 0.4187f * g - 0.0813f * b + 128f).toInt()
-
-            val isWarmSkin = (r > 40 && g > 25 && b > 15) &&
-                    (r > g && (r > b || (g - b) in -15..30)) &&
-                    (cb in 68..142) &&
-                    (cr in 126..180)
-
-            val isCoolSkin = (r > 35 && g > 25 && b > 25) &&
-                    (cb in 75..165) &&
-                    (cr in 115..172) &&
-                    (r >= g * 0.80f)
-
-            if (!isRedOnion && (isWarmSkin || isCoolSkin)) {
-                skinCount++
-            }
+            if (isHumanSkinPixel(r, g, b)) skinCount++
             totalSampled++
             x += stepX
         }

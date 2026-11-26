@@ -117,7 +117,9 @@ object IntimateSceneRules {
         audioLabel: String?,
         screenW: Float,
         screenH: Float,
-        sensitivity: Float = 0.25f
+        sensitivity: Float = 0.25f,
+        clipKissProb: Float = 0f,
+        clipMargin: Float = 0f
     ): IntimateSignals {
         val explicitThresh = sensitivity.coerceIn(0.26f, 0.45f)
         val hasExplicit = detections.any { it.label in EXPLICIT_NUDITY_LABELS && it.confidence >= explicitThresh }
@@ -150,7 +152,20 @@ object IntimateSceneRules {
             )
         }
 
-        // 3. Kissing / bed pose must have real NSFW, semi-nude, or intimate audio support (never SFW talking close-ups)
+        // 3. MobileCLIP2-S0 clothed kissing / bed / romantic embrace detector (catches PG-13 movie kissing)
+        if ((clipKissProb >= 0.72f && clipMargin >= 0.025f) ||
+            (kissOrBedCue && clipKissProb >= 0.55f && clipMargin >= 0.012f)
+        ) {
+            return IntimateSignals(
+                triggered = true,
+                instant = clipKissProb >= 0.86f && clipMargin >= 0.045f,
+                reason = "Intimate Scene / Kissing (CLIP)",
+                confidence = clipKissProb,
+                isKissOrBedCue = true
+            )
+        }
+
+        // 4. Kissing / bed pose must have real NSFW, semi-nude, or intimate audio support (never SFW talking close-ups)
         if (kissOrBedCue && (nsfwProb >= 0.34f || (nsfwProb >= 0.18f && (hasSemiNude || audioScore >= 0.30f)))) {
             return IntimateSignals(
                 triggered = true,
@@ -161,7 +176,7 @@ object IntimateSceneRules {
             )
         }
 
-        // 4. Audio moaning / panting / groaning (requires distinct vocal label; sustained windows for audio-only)
+        // 5. Audio moaning / panting / groaning (requires distinct vocal label; sustained windows for audio-only)
         val hasVocalLabel = !audioLabel.isNullOrBlank()
         if (hasVocalLabel && (audioScore >= 0.55f || (audioScore >= 0.35f && (nsfwProb >= 0.25f || hasSemiNude || kissOrBedCue)))) {
             return IntimateSignals(
