@@ -1,8 +1,8 @@
 {
-  "versionCode": 20400,
-  "versionName": "2.4",
-  "publishedAt": "2026-11-26T18:54:00Z",
-  "releaseNotes": "• Fix: Android 14–17 Screen Cast Persistence — dedicated ScreenCastForegroundService (`foregroundServiceType=mediaProjection`), default-display MediaProjectionConfig, and ProjectionPromptActivity dismiss race fix so Screen Cast never drops shortly after granting permission.\n• Fix: Streaming Clothed Kissing & Forward Skip (Nuvio, Stremio, CloudStream) — re-calibrated MobileCLIP prompts & temperature (`logitScale=85`) with widescreen/face-centered crop, instant trigger on strong kissing frames, and HUD-wake + KEYCODE_MEDIA_FAST_FORWARD seek.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.4/SaveGaze-arm64-v8a.apk",
-  "apkSize": 75635796
+  "versionCode": 20500,
+  "versionName": "2.5",
+  "publishedAt": "2026-11-26T19:39:00Z",
+  "releaseNotes": "• Critical Fix: ARM64 MobileCLIP ONNX Model Fix — replaced unsupported dynamic-quantized `mobileclip_vision_q.onnx` (`ConvInteger(10)` ORT failure + corrupted cosine vectors) with native FP32 `mobileclip_vision.onnx` (~3x faster inference, true visual-text alignment, verified live on ARM64 Android 17) and lowered async CLIP scan interval to `600ms` for Nuvio/Stremio/CloudStream clothed kissing scenes.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.5/SaveGaze-arm64-v8a.apk",
+  "apkSize": 110235634
 }
