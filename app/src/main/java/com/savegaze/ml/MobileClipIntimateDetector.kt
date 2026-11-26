@@ -91,7 +91,7 @@ class MobileClipIntimateDetector(context: Context) {
 
     companion object {
         private const val TAG = "MobileClipDetector"
-        private const val VISION_MODEL_FILE = "mobileclip_vision_q.onnx"
+        private const val VISION_MODEL_FILE = "mobileclip_vision.onnx"
         private const val PROMPTS_FILE = "clip_intimate_prompts.json"
         private const val INPUT_SIZE = 256
     }
@@ -118,6 +118,7 @@ class MobileClipIntimateDetector(context: Context) {
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
         }
         session = env.createSession(modelBytes, opts)
+        Log.i(TAG, "MobileCLIP FP32 vision loaded (${promptEmbeddings.size} prompts, positive=$positiveCount)")
     }
 
     suspend fun classify(bitmap: Bitmap): ClipIntimateScore? = withContext(Dispatchers.Default) {

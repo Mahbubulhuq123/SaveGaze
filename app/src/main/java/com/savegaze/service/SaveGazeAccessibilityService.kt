@@ -1227,7 +1227,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 if (clipDetector != null &&
                     !screenChange.isStatic &&
                     (activeContext != MediaAppContext.BROWSER_OR_GENERAL || lastHasSeekBarOrPlayer || isLandscapeFrame) &&
-                    now - lastClipLaunchMs >= 950L &&
+                    now - lastClipLaunchMs >= 600L &&
                     clipInferenceInFlight.compareAndSet(false, true)
                 ) {
                     lastClipLaunchMs = now
