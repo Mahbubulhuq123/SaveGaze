@@ -1,8 +1,8 @@
 {
-  "versionCode": 10800,
-  "versionName": "1.8",
-  "publishedAt": "2026-11-26T07:12:00Z",
-  "releaseNotes": "• Fix: SaveGaze VPN now works on Android 14–17 / Samsung One UI (e.g., Galaxy A16 5G) — sets blocking TUN mode + /24 subnet (`10.10.10.2/24`) preventing kernel EINVAL rejections, and adds IPv6 DNS upstreams.\n• Fix: Multi-image grids & multi-person photos now blur all target-gender semi-nude subjects cleanly in Female-Only mode — 2x2 overlapping NudeNet tiles, sharper PordaV4x3 strips, cross-column cluster isolation, and orphan thumbnail grouping.\n• Fix: Blocked keyword search now works inside Facebook and other social/content apps — scans search/editable inputs on 1-word hit, reacts to live typing, and inspects deep UI trees.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v1.8/SaveGaze-arm64-v8a.apk",
-  "apkSize": 42295323
+  "versionCode": 10900,
+  "versionName": "1.9",
+  "publishedAt": "2026-11-26T07:43:00Z",
+  "releaseNotes": "• Improvement: Body blurring now extends upward to cover the neck/throat up to the lower jawline even when Face Blurring is OFF (and on headless chest/upper-body close-ups), while keeping eyes/upper face visible when Face Blurring is OFF.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v1.9/SaveGaze-arm64-v8a.apk",
+  "apkSize": 42296103
 }
