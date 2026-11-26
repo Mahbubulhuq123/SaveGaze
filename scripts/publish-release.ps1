@@ -21,9 +21,11 @@ foreach ($a in $Assets) {
   }
 }
 
+$owner = "Mahbubulhuq123"
+$repo = "SaveGaze"
+
 # Retrieve GitHub token via git credential manager without echoing it
-$credInput = "protocol=https`nhost=github.com`n"
-$credLines = $credInput | git credential fill
+$credLines = @("url=https://github.com/$owner/$repo.git", "") | git credential fill
 $tokenLine = $credLines | Where-Object { $_ -match '^password=' } | Select-Object -First 1
 if (-not $tokenLine) {
   throw "No GitHub token returned by git credential fill."
@@ -36,8 +38,6 @@ $headers = @{
   "User-Agent"  = "SaveGaze-PC-ReleaseScript"
 }
 
-$owner = "Mahbubulhuq123"
-$repo = "SaveGaze"
 $meta = Get-Content (Join-Path $DistDir "pc-version.json") -Raw | ConvertFrom-Json
 
 if ($DryRun) {
