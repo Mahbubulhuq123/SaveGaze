@@ -1,8 +1,8 @@
 {
-  "versionCode": 10700,
-  "versionName": "1.7",
-  "publishedAt": "2026-11-25T20:06:00Z",
-  "releaseNotes": "• Fix: Blur overlay no longer blinks or flickers — ignores same-app popups/IME, avoids false scroll wipes & occlusion shrinkage, and applies deadband lock.\n• Fix: Males no longer falsely blurred in Female-Only mode — tightened cross-gender NMS (IoU 0.60→0.28), added confidence-margin checks, gender-aware clustering, and opposite-gender box clamping.\n• Fix: Internet now works in all browsers — VPN sends TCP RST for DoT (:853) & TCP DNS (:53), binds upstream DNS to physical network, adds ISP DNS priority, DoH fallback, and DNS cache.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v1.7/SaveGaze-arm64-v8a.apk",
-  "apkSize": 42293015
+  "versionCode": 10800,
+  "versionName": "1.8",
+  "publishedAt": "2026-11-26T07:12:00Z",
+  "releaseNotes": "• Fix: SaveGaze VPN now works on Android 14–17 / Samsung One UI (e.g., Galaxy A16 5G) — sets blocking TUN mode + /24 subnet (`10.10.10.2/24`) preventing kernel EINVAL rejections, and adds IPv6 DNS upstreams.\n• Fix: Multi-image grids & multi-person photos now blur all target-gender semi-nude subjects cleanly in Female-Only mode — 2x2 overlapping NudeNet tiles, sharper PordaV4x3 strips, cross-column cluster isolation, and orphan thumbnail grouping.\n• Fix: Blocked keyword search now works inside Facebook and other social/content apps — scans search/editable inputs on 1-word hit, reacts to live typing, and inspects deep UI trees.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v1.8/SaveGaze-arm64-v8a.apk",
+  "apkSize": 42295323
 }
