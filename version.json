@@ -1,8 +1,8 @@
 {
-  "versionCode": 20000,
-  "versionName": "2.0",
-  "publishedAt": "2026-11-26T08:31:30Z",
-  "releaseNotes": "• New: Intimate Video & Audio Guard — detects kissing, bed scenes, explicit content & internal playback moaning/groaning/panting audio (via YAMNet + SwiftFormer ONNX, no mic needed).\n• New: Blur First, Then Act — shields the screen immediately before skipping scenes forward (Movies/Series like Stremio/Nuvio/YouTube), swiping to Next Reel (Instagram/Facebook/Shorts/TikTok), or pausing & pressing Back in browsers.\n• New: DRM Streaming Policy (Netflix, Prime Video, Hotstar) — choose Warn Only, Auto-Block, or Off where Android hardware DRM blocks screen & audio capture.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.0/SaveGaze-arm64-v8a.apk",
-  "apkSize": 67879292
+  "versionCode": 20100,
+  "versionName": "2.1",
+  "publishedAt": "2026-11-26T11:36:00Z",
+  "releaseNotes": "• Optimization: Screen Cast is now optional (OFF by default on Android 11+) — visual blurring, kissing/bed/explicit scene skip, and new zero-cast subtitle/caption intimate guard run completely without Screen Cast.\n• Battery Fix: Skips scanning when screen is OFF/locked or on launchers/settings/dialers/keyboards, checks static screens BEFORE running ONNX neural nets, runs NudeNet tiling adaptively, and gates audio YAMNet strictly on active media playback.\n• Accuracy Fix: Tightened kissing proximity + removed standalone close-up face SFW triggers to prevent false-positive skips.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.1/SaveGaze-arm64-v8a.apk",
+  "apkSize": 67884960
 }
