@@ -127,10 +127,16 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
         }
 
-        fun onMovieCastPromptResolved(granted: Boolean) {
+        fun onMovieCastPromptResolved(granted: Boolean, restorePackage: String = "") {
             val svc = instance ?: return
             svc.projectionPromptOpen = false
-            if (!granted) {
+            if (granted) {
+                svc.lastCastGrantedMs = System.currentTimeMillis()
+                svc.stopCastDebounceJob?.cancel()
+                if (restorePackage.isNotBlank() && !svc.isIdleOrSystemPackage(restorePackage)) {
+                    svc.lastForegroundPackage = restorePackage
+                }
+            } else {
                 svc.lastCastExitMs = System.currentTimeMillis()
             }
         }
@@ -201,6 +207,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     @Volatile private var autoMovieAudioCastEnabled = true
     @Volatile private var projectionPromptOpen = false
     @Volatile private var lastCastExitMs = 0L
+    @Volatile private var lastCastGrantedMs = 0L
     private var stopCastDebounceJob: Job? = null
     @Volatile private var intimateActionMode = IntimateActionMode.SMART_CONTEXT
     @Volatile private var drmAppPolicy = DrmAppPolicy.WARN_ONLY
@@ -274,10 +281,10 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }.getOrNull()
                     audioIntimateDetector = runCatching {
                         AudioIntimateDetector(this@SaveGazeAccessibilityService)
-                    }.getOrNull()
+                    }.onFailure { Log.e(TAG, "AudioIntimateDetector failed to load", it) }.getOrNull()
                     mobileClipDetector = runCatching {
                         MobileClipIntimateDetector(this@SaveGazeAccessibilityService)
-                    }.getOrNull()
+                    }.onFailure { Log.e(TAG, "MobileClipIntimateDetector failed to load", it) }.getOrNull()
                     detector = NudeNetDetector(this@SaveGazeAccessibilityService)
                 }
                 publishHealth { it.copy(detectorStatus = DetectorStatus.READY) }
@@ -440,8 +447,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             syncLockoutOverlay()
         }
 
+        val now = System.currentTimeMillis()
         if (pkg == "com.android.systemui" || pkg == packageName || pkg.contains("permissioncontroller", ignoreCase = true)) {
-            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg == packageName && !projectionPromptOpen) {
+            val clsName = event.className?.toString() ?: ""
+            val isOverlayPromptOrRecentDismiss = projectionPromptOpen ||
+                (now - lastCastGrantedMs < 3_500L) ||
+                clsName.contains("ProjectionPromptActivity") ||
+                clsName.contains("ChallengeActivity")
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg == packageName && !isOverlayPromptOrRecentDismiss) {
                 lastForegroundPackage = pkg
                 trackedBoxes.clear()
                 activeBlurBoxes = emptyList()
@@ -451,8 +464,6 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
             return
         }
-
-        val now = System.currentTimeMillis()
 
         // 1. Instant App Blocker, DRM Streaming Guard & Settings Tamper Guard
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
@@ -522,6 +533,11 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 }
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                if ((lastForegroundPackage.isNullOrBlank() || lastForegroundPackage == packageName) &&
+                    pkg.isNotBlank() && !isIdleOrSystemPackage(pkg)
+                ) {
+                    lastForegroundPackage = pkg
+                }
                 if (now - lastGuardCheckMs >= 450L) {
                     checkContentGuardWindow(pkg, forceCheck = false)
                     evaluateAutoMovieCast()
@@ -769,13 +785,15 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             mediaProjection = null
             mediaProjectionData = null
             mediaProjectionResultCode = 0
-            showPersistentNotification(paused = !isProtectionEnabled, requireProjectionFgs = false)
+            ScreenCastForegroundService.stop(this)
+            Log.i(TAG, "Screen Cast stopped cleanly (auto-stop or toggle off)")
         }
     }
 
     private fun evaluateAutoMovieCast() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
         if (!isProtectionEnabled || !intimateGuardEnabled || !autoMovieAudioCastEnabled) return
+        val now = System.currentTimeMillis()
         if (!isScreenAwakeAndUnlocked()) {
             if (mediaProjection != null && !intimateAudioEnabled) {
                 releaseMediaProjectionAudioOnly()
@@ -797,8 +815,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
         if (shouldCastNow) {
             stopCastDebounceJob?.cancel()
-            val now = System.currentTimeMillis()
-            if (mediaProjection == null && (now - lastCastExitMs >= 2_500L)) {
+            if (mediaProjection == null && (now - lastCastExitMs >= 2_500L) && (now - lastCastGrantedMs >= 4_000L)) {
                 projectionPromptOpen = true
                 val promptIntent = Intent(this, ProjectionPromptActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -808,9 +825,10 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             } else if (mediaProjection != null && audioIntimateDetector?.isCapturing() != true) {
                 startAudioCaptureIfReady()
             }
-        } else if (!intimateAudioEnabled && mediaProjection != null && stopCastDebounceJob?.isActive != true) {
+        } else if (!intimateAudioEnabled && mediaProjection != null && (now - lastCastGrantedMs >= 4_000L) && stopCastDebounceJob?.isActive != true) {
             stopCastDebounceJob = serviceScope.launch {
-                delay(1_800L)
+                delay(3_200L)
+                val checkNow = System.currentTimeMillis()
                 val rePkg = lastForegroundPackage ?: ""
                 val reLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
                 val rePlaying = cachedAudioManager?.isMusicActive == true
@@ -820,8 +838,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     hasSeekBarOrPlayerControls = lastHasSeekBarOrPlayer,
                     isLandscape = reLandscape,
                     isMediaPlaying = rePlaying
-                )
-                if (!stillNeeded && !intimateAudioEnabled && !projectionPromptOpen && mediaProjection != null) {
+                ) || (rePlaying && (rePkg.contains("youtube") || rePkg in ContentGuardLists.BROWSER_PACKAGES))
+                if (!stillNeeded && !intimateAudioEnabled && !projectionPromptOpen && mediaProjection != null && (checkNow - lastCastGrantedMs >= 4_000L)) {
                     releaseMediaProjectionAudioOnly()
                     overlayManager?.showBlockBanner(
                         "Screen Cast Stopped",
@@ -928,23 +946,23 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         val data = mediaProjectionData ?: return
         val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager ?: return
 
-        // Android 10–17 requires foregroundServiceType=mediaProjection active before getMediaProjection()
-        showPersistentNotification(paused = !isProtectionEnabled, requireProjectionFgs = true)
-
         if (mediaProjection == null) {
             mediaProjection = try {
                 mpManager.getMediaProjection(mediaProjectionResultCode, data)?.also { mp ->
                     mp.registerCallback(object : MediaProjection.Callback() {
                         override fun onStop() {
+                            Log.i(TAG, "MediaProjection.Callback.onStop() invoked")
                             audioIntimateDetector?.stop()
                             mediaProjection = null
                             mediaProjectionData = null
                             mediaProjectionResultCode = 0
+                            ScreenCastForegroundService.stop(this@SaveGazeAccessibilityService)
                         }
                     }, Handler(Looper.getMainLooper()))
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to get MediaProjection", e)
+                ScreenCastForegroundService.stop(this)
                 return
             }
         }
@@ -1213,7 +1231,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     clipInferenceInFlight.compareAndSet(false, true)
                 ) {
                     lastClipLaunchMs = now
-                    val clipCrop = createCenterSquareClipCrop(bitmap)
+                    val clipCrop = createCenterSquareClipCrop(bitmap, filtered.faces.map { it.box })
                     if (clipCrop != null) {
                         serviceScope.launch(Dispatchers.Default) {
                             try {
@@ -1221,6 +1239,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                                 if (score != null) {
                                     lastClipScore = score
                                     lastClipScoredMs = System.currentTimeMillis()
+                                    if (score.intimateProb >= 0.45f) {
+                                        Log.i(TAG, "MobileCLIP score prob=${score.intimateProb} margin=${score.margin} pkg=$activePkg")
+                                    }
                                 }
                             } finally {
                                 if (!clipCrop.isRecycled) clipCrop.recycle()
@@ -1236,7 +1257,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val freshAudioScore = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.score else 0f
                 val freshAudioLabel = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.topLabel else ""
                 val evalSafety = sceneSafety ?: if (!lastScreenIsStatic) null else lastSceneSafety
-                val freshClip = lastClipScore?.takeIf { now - lastClipScoredMs < 2_400L }
+                val freshClip = lastClipScore?.takeIf { now - lastClipScoredMs < 2_600L }
                 val signals = IntimateSceneRules.evaluate(
                     detections = detections,
                     personBoxes = personBoxes,
@@ -1253,13 +1274,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     consecutiveIntimateHits++
                     val neededHits = if (signals.instant) 1 else 2
                     if (consecutiveIntimateHits >= neededHits && (now - lastIntimateActionMs >= 2_200L)) {
+                        Log.i(TAG, "Triggering intimate action: ${signals.reason} (conf=${signals.confidence}, pkg=$activePkg)")
                         consecutiveIntimateHits = 0
                         serviceScope.launch(Dispatchers.Main) {
                             triggerIntimateAction(signals)
                         }
                     }
                 } else {
-                    consecutiveIntimateHits = 0
+                    consecutiveIntimateHits = (consecutiveIntimateHits - 1).coerceAtLeast(0)
                 }
             }
 
@@ -1468,11 +1490,21 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         return ScreenChangeResult(isStatic = rate >= 0.96f, isSceneCut = rate < 0.30f)
     }
 
-    private fun createCenterSquareClipCrop(source: Bitmap): Bitmap? {
+    private fun createCenterSquareClipCrop(source: Bitmap, faceBoxes: List<BoundingBox> = emptyList()): Bitmap? {
         return try {
-            val cropSize = minOf(source.width, source.height).coerceAtLeast(1)
-            val cropX = ((source.width - cropSize) / 2).coerceAtLeast(0)
-            val cropY = ((source.height - cropSize) / 2).coerceAtLeast(0)
+            val w = source.width
+            val h = source.height
+            // On widescreen cinema (e.g. 21:9 movies), trim horizontal top/bottom letterbox bars before cropping
+            val activeTop = if (w >= h * 1.45f) (h * 0.10f).toInt() else 0
+            val activeH = (h - activeTop * 2).coerceAtLeast(1)
+            val cropSize = minOf(w, activeH).coerceAtLeast(1)
+            val cropX = if (faceBoxes.isNotEmpty() && w > cropSize) {
+                val centerFocus = faceBoxes.map { it.centerX }.average().toFloat()
+                (centerFocus - cropSize / 2f).toInt().coerceIn(0, w - cropSize)
+            } else {
+                ((w - cropSize) / 2).coerceAtLeast(0)
+            }
+            val cropY = (activeTop + (activeH - cropSize) / 2).coerceIn(0, (h - cropSize).coerceAtLeast(0))
             val square = Bitmap.createBitmap(source, cropX, cropY, cropSize, cropSize)
             if (cropSize == 256) {
                 square
@@ -1532,9 +1564,16 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
                     ExitActionType.SKIP_SCENE_FORWARD -> {
                         consecutiveSkipsOnSameVideo++
-                        val clickedNode = tryClickForwardNode()
+                        var clickedNode = tryClickForwardNode()
                         if (!clickedNode) {
-                            performSkipSceneForward(w, h)
+                            // Wake hidden player HUD controls first, then try node forward or double-tap + MediaSession FFWD
+                            dispatchSingleTap(w * 0.80f, h * 0.48f)
+                            delay(130L)
+                            clickedNode = tryClickForwardNode()
+                            if (!clickedNode) {
+                                performSkipSceneForward(w, h)
+                                dispatchMediaFastForward()
+                            }
                         }
                         delay(1_150L)
                     }
@@ -1624,9 +1663,26 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         return false
     }
 
+    private fun dispatchSingleTap(x: Float, y: Float) {
+        val path = Path().apply { moveTo(x, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, 30L))
+            .build()
+        dispatchGesture(gesture, null, null)
+    }
+
+    private fun dispatchMediaFastForward() {
+        try {
+            val am = cachedAudioManager ?: (getSystemService(AUDIO_SERVICE) as AudioManager)
+            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD))
+            am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD))
+        } catch (_: Exception) {
+        }
+    }
+
     private fun performSkipSceneForward(w: Int, h: Int) {
         val tapX = w * 0.82f
-        val tapY = h * 0.45f
+        val tapY = h * 0.48f
         val builder = GestureDescription.Builder()
         // 3 rapid right-side taps trigger +10s/+20s seek in YouTube, ExoPlayer, Nuvio, Stremio, VLC & HTML5 players
         for (i in 0..2) {
@@ -1671,7 +1727,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun showPersistentNotification(paused: Boolean = false, requireProjectionFgs: Boolean = false) {
+    private fun showPersistentNotification(paused: Boolean = false) {
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
@@ -1691,23 +1747,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !requireProjectionFgs) {
-            getSystemService(NotificationManager::class.java).notify(Constants.NOTIFICATION_ID, notification)
-        } else {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(
-                        Constants.NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                    )
-                } else {
-                    startForeground(Constants.NOTIFICATION_ID, notification)
-                }
-            } catch (_: Exception) {
-                getSystemService(NotificationManager::class.java).notify(Constants.NOTIFICATION_ID, notification)
-            }
-        }
+        getSystemService(NotificationManager::class.java).notify(Constants.NOTIFICATION_ID, notification)
         notificationShown = true
     }
 
@@ -1728,6 +1768,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         virtualDisplay?.release(); virtualDisplay = null
         imageReader?.close(); imageReader = null
         mediaProjection?.stop(); mediaProjection = null
+        ScreenCastForegroundService.stop(this)
         handlerThread?.quitSafely(); handlerThread = null
         backgroundHandler = null
 

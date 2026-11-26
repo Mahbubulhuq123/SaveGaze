@@ -153,12 +153,12 @@ object IntimateSceneRules {
         }
 
         // 3. MobileCLIP2-S0 clothed kissing / bed / romantic embrace detector (catches PG-13 movie kissing)
-        if ((clipKissProb >= 0.72f && clipMargin >= 0.025f) ||
-            (kissOrBedCue && clipKissProb >= 0.55f && clipMargin >= 0.012f)
+        if ((clipKissProb >= 0.60f && clipMargin >= 0.010f) ||
+            (kissOrBedCue && clipKissProb >= 0.48f && clipMargin >= 0.004f)
         ) {
             return IntimateSignals(
                 triggered = true,
-                instant = clipKissProb >= 0.86f && clipMargin >= 0.045f,
+                instant = clipKissProb >= 0.74f && clipMargin >= 0.018f,
                 reason = "Intimate Scene / Kissing (CLIP)",
                 confidence = clipKissProb,
                 isKissOrBedCue = true

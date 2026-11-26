@@ -5,7 +5,9 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -66,12 +68,22 @@ class ProjectionPromptActivity : ComponentActivity() {
         }
     }
 
+    private var targetPkgName: String = ""
+
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            SaveGazeAccessibilityService.setMediaProjectionResult(result.resultCode, result.data!!)
-            SaveGazeAccessibilityService.onMovieCastPromptResolved(granted = true)
+            val data = result.data!!
+            val code = result.resultCode
+            val restorePkg = targetPkgName
+            SaveGazeAccessibilityService.onMovieCastPromptResolved(
+                granted = true,
+                restorePackage = restorePkg
+            )
+            ScreenCastForegroundService.start(applicationContext) {
+                SaveGazeAccessibilityService.setMediaProjectionResult(code, data)
+            }
             finish()
         } else {
             waitingAfterDecline = true
@@ -82,6 +94,7 @@ class ProjectionPromptActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val targetPkg = intent.getStringExtra(EXTRA_TARGET_PACKAGE) ?: "Video Player"
+        targetPkgName = intent.getStringExtra(EXTRA_TARGET_PACKAGE) ?: ""
 
         setContent {
             SaveGazeTheme {
@@ -175,7 +188,11 @@ class ProjectionPromptActivity : ComponentActivity() {
 
     private fun launchMediaProjectionDialog() {
         val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
-        val capIntent = mpManager?.createScreenCaptureIntent()
+        val capIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            mpManager?.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            mpManager?.createScreenCaptureIntent()
+        }
         if (capIntent != null) {
             projectionLauncher.launch(capIntent)
         } else {

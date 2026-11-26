@@ -280,11 +280,27 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.80f,
-            clipMargin = 0.04f
+            clipKissProb = 0.76f,
+            clipMargin = 0.020f
         )
         assertTrue(clipKiss.triggered)
+        assertTrue(clipKiss.instant)
         assertTrue(clipKiss.reason.contains("CLIP"))
+
+        val clipKissSingleFrame = IntimateSceneRules.evaluate(
+            detections = emptyList(),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.04f, sfw = 0.96f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2400f,
+            screenH = 1080f,
+            sensitivity = 0.25f,
+            clipKissProb = 0.64f,
+            clipMargin = 0.012f
+        )
+        assertTrue(clipKissSingleFrame.triggered)
+        assertFalse(clipKissSingleFrame.instant)
     }
 
     @Test

@@ -33,7 +33,7 @@ object MobileClipIntimateRules {
         imageEmbedding: FloatArray,
         promptEmbeddings: Array<FloatArray>,
         positiveCount: Int,
-        logitScale: Float = 45f
+        logitScale: Float = 85f
     ): ClipIntimateScore {
         if (promptEmbeddings.isEmpty() || positiveCount <= 0 || positiveCount >= promptEmbeddings.size) {
             return ClipIntimateScore(0f, 0f, 0f, 0f)

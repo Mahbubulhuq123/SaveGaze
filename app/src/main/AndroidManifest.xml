@@ -52,7 +52,6 @@
         <service
             android:name=".service.SaveGazeAccessibilityService"
             android:exported="true"
-            android:foregroundServiceType="mediaProjection"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -61,6 +60,11 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <service
+            android:name=".service.ScreenCastForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <service
             android:name=".guard.SaveGazeVpnService"
