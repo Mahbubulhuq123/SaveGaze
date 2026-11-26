@@ -141,7 +141,9 @@ fun HomeScreen(
     onOpenGuard: () -> Unit = {},
     onRequestVpnStart: () -> Unit = {},
     hasMediaProjection: Boolean = true,
+    hasAudioPermission: Boolean = true,
     onRequestMediaProjection: () -> Unit = {},
+    onRequestAudioPermissions: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -177,6 +179,8 @@ fun HomeScreen(
     val sensitivity by preferencesManager.sensitivityFlow.collectAsState(initial = 0.25f)
     val blurStyle by preferencesManager.blurStyleFlow.collectAsState(initial = BlurStyle.SOLID_BLACK)
     val blurOpacity by preferencesManager.blurOpacityFlow.collectAsState(initial = 100)
+    val intimateGuardEnabled by preferencesManager.intimateGuardEnabledFlow.collectAsState(initial = true)
+    val intimateAudioEnabled by preferencesManager.intimateAudioEnabledFlow.collectAsState(initial = true)
 
     // Re-check on every resume so returning from system Accessibility settings updates the card.
     DisposableEffect(lifecycleOwner, context) {
@@ -622,6 +626,45 @@ fun HomeScreen(
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = "Screen Capture Active",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color(0xFF2E7D32)
+                                )
+                            }
+                        }
+                    }
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && intimateGuardEnabled && intimateAudioEnabled) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        if (!hasAudioPermission || !hasMediaProjection) {
+                            Button(
+                                onClick = onRequestAudioPermissions,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.secondary
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Security,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Enable Intimate Audio Guard")
+                            }
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = Color(0xFF2E7D32),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Intimate Audio & Scene Guard Active",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = Color(0xFF2E7D32)
                                 )

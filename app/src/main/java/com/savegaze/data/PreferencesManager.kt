@@ -13,6 +13,8 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.savegaze.guard.ContentGuardRules
 import com.savegaze.ml.GenderFilter
+import com.savegaze.service.DrmAppPolicy
+import com.savegaze.service.IntimateActionMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -56,6 +58,12 @@ class PreferencesManager(private val context: Context) {
         val LOCKOUT_UNTIL_MS = longPreferencesKey("cg_lockout_until_ms")
         val TAMPER_UNLOCK_UNTIL_MS = longPreferencesKey("cg_tamper_unlock_until_ms")
         val TOTAL_BLOCKED_COUNT = intPreferencesKey("cg_total_blocked_count")
+
+        // Intimate Video & Audio Guard Keys
+        val INTIMATE_GUARD_ENABLED = booleanPreferencesKey("intimate_guard_enabled")
+        val INTIMATE_AUDIO_ENABLED = booleanPreferencesKey("intimate_audio_enabled")
+        val INTIMATE_ACTION_MODE = stringPreferencesKey("intimate_action_mode")
+        val DRM_APP_POLICY = stringPreferencesKey("drm_app_policy")
     }
 
     // ── Flow-based reactive getters ─────────────────────────────────────
@@ -171,6 +179,32 @@ class PreferencesManager(private val context: Context) {
         prefs[Keys.TOTAL_BLOCKED_COUNT] ?: 0
     }
 
+    val intimateGuardEnabledFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.INTIMATE_GUARD_ENABLED] ?: true
+    }
+
+    val intimateAudioEnabledFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.INTIMATE_AUDIO_ENABLED] ?: true
+    }
+
+    val intimateActionModeFlow: Flow<IntimateActionMode> = context.dataStore.data.map { prefs ->
+        val raw = prefs[Keys.INTIMATE_ACTION_MODE] ?: IntimateActionMode.SMART_CONTEXT.name
+        try {
+            IntimateActionMode.valueOf(raw)
+        } catch (_: IllegalArgumentException) {
+            IntimateActionMode.SMART_CONTEXT
+        }
+    }
+
+    val drmAppPolicyFlow: Flow<DrmAppPolicy> = context.dataStore.data.map { prefs ->
+        val raw = prefs[Keys.DRM_APP_POLICY] ?: DrmAppPolicy.WARN_ONLY.name
+        try {
+            DrmAppPolicy.valueOf(raw)
+        } catch (_: IllegalArgumentException) {
+            DrmAppPolicy.WARN_ONLY
+        }
+    }
+
     val recentBlockCountFlow: Flow<Int> = context.dataStore.data.map { prefs ->
         val now = System.currentTimeMillis()
         parseTimestamps(prefs[Keys.BLOCK_TIMESTAMPS_CSV]).count {
@@ -207,6 +241,10 @@ class PreferencesManager(private val context: Context) {
     suspend fun getLockoutUntilMs(): Long = lockoutUntilMsFlow.first()
     suspend fun getTamperUnlockUntilMs(): Long = tamperUnlockUntilMsFlow.first()
     suspend fun getTotalBlockedCount(): Int = totalBlockedCountFlow.first()
+    suspend fun getIntimateGuardEnabled(): Boolean = intimateGuardEnabledFlow.first()
+    suspend fun getIntimateAudioEnabled(): Boolean = intimateAudioEnabledFlow.first()
+    suspend fun getIntimateActionMode(): IntimateActionMode = intimateActionModeFlow.first()
+    suspend fun getDrmAppPolicy(): DrmAppPolicy = drmAppPolicyFlow.first()
 
     // ── Suspend setters ─────────────────────────────────────────────────
 
@@ -291,6 +329,22 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setBlockSocialDistractions(enabled: Boolean) {
         context.dataStore.edit { it[Keys.BLOCK_SOCIAL_DISTRACTIONS] = enabled }
+    }
+
+    suspend fun setIntimateGuardEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.INTIMATE_GUARD_ENABLED] = enabled }
+    }
+
+    suspend fun setIntimateAudioEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.INTIMATE_AUDIO_ENABLED] = enabled }
+    }
+
+    suspend fun setIntimateActionMode(mode: IntimateActionMode) {
+        context.dataStore.edit { it[Keys.INTIMATE_ACTION_MODE] = mode.name }
+    }
+
+    suspend fun setDrmAppPolicy(policy: DrmAppPolicy) {
+        context.dataStore.edit { it[Keys.DRM_APP_POLICY] = policy.name }
     }
 
     suspend fun setMasterPassword(plainPassword: String) {

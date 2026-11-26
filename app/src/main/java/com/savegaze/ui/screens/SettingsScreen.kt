@@ -79,6 +79,8 @@ import com.savegaze.data.PreferencesManager
 import com.savegaze.guard.BlockPChallengeDialog
 import com.savegaze.guard.DeviceAdminHelper
 import com.savegaze.ml.GenderFilter
+import com.savegaze.service.DrmAppPolicy
+import com.savegaze.service.IntimateActionMode
 import com.savegaze.update.AppUpdateManager
 import com.savegaze.update.UpdateStatus
 import kotlinx.coroutines.launch
@@ -88,6 +90,7 @@ import kotlin.math.roundToInt
 enum class SettingsSection(val title: String) {
     GENDER("Gender Filter"),
     FACE("Face Blurring"),
+    INTIMATE_GUARD("Intimate Video & Audio Guard"),
     FULL_BODY("Full Body Blurring"),
     UNINSTALL_PROTECTION("Uninstall Protection"),
     SENSITIVITY("Detection Sensitivity"),
@@ -103,6 +106,9 @@ fun SettingsScreen(
     updateManager: AppUpdateManager,
     sectionToReveal: SettingsSection? = null,
     onSectionRevealed: () -> Unit = {},
+    hasAudioPermission: Boolean = true,
+    hasMediaProjection: Boolean = true,
+    onRequestAudioPermissions: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -140,6 +146,10 @@ fun SettingsScreen(
     val blurOpacity by preferencesManager.blurOpacityFlow.collectAsState(initial = 100)
     var sliderOpacity by remember { mutableFloatStateOf(blurOpacity.toFloat()) }
     val blurFaces by preferencesManager.blurFacesFlow.collectAsState(initial = false)
+    val intimateGuardEnabled by preferencesManager.intimateGuardEnabledFlow.collectAsState(initial = true)
+    val intimateAudioEnabled by preferencesManager.intimateAudioEnabledFlow.collectAsState(initial = true)
+    val intimateActionMode by preferencesManager.intimateActionModeFlow.collectAsState(initial = IntimateActionMode.SMART_CONTEXT)
+    val drmAppPolicy by preferencesManager.drmAppPolicyFlow.collectAsState(initial = DrmAppPolicy.WARN_ONLY)
     val tamperEnabled by preferencesManager.tamperGuardEnabledFlow.collectAsState(initial = false)
     val masterHash by preferencesManager.masterPasswordHashFlow.collectAsState(initial = null)
     var pendingChallengeTitle by remember { mutableStateOf<String?>(null) }
@@ -302,6 +312,167 @@ fun SettingsScreen(
                     checked = blurFaces,
                     onCheckedChange = null
                 )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Intimate Video, Audio & DRM Guard Section
+        ElevatedCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .registerSettingsSection(SettingsSection.INTIMATE_GUARD, sectionOffsets),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp)
+            ) {
+                Text(
+                    text = "Intimate Video & Audio Guard",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Detects intimate scenes (kissing, bed scenes, explicit visuals, or moaning audio), blurs first, then skips or exits.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(
+                            value = intimateGuardEnabled,
+                            onValueChange = { wantOn ->
+                                if (!wantOn) {
+                                    pendingChallengeTitle = "Disable Intimate Video Guard"
+                                    pendingChallengeAction = {
+                                        coroutineScope.launch { preferencesManager.setIntimateGuardEnabled(false) }
+                                    }
+                                } else {
+                                    coroutineScope.launch { preferencesManager.setIntimateGuardEnabled(true) }
+                                }
+                            },
+                            role = Role.Switch
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Auto-Action on Intimate Scenes",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Blurs screen immediately first, then skips scene / next reel / goes back",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Switch(checked = intimateGuardEnabled, onCheckedChange = null)
+                }
+
+                Divider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(
+                            value = intimateAudioEnabled,
+                            onValueChange = { wantOn ->
+                                if (!wantOn) {
+                                    pendingChallengeTitle = "Disable Intimate Audio Detection"
+                                    pendingChallengeAction = {
+                                        coroutineScope.launch { preferencesManager.setIntimateAudioEnabled(false) }
+                                    }
+                                } else {
+                                    coroutineScope.launch { preferencesManager.setIntimateAudioEnabled(true) }
+                                    if (!hasAudioPermission || !hasMediaProjection) {
+                                        onRequestAudioPermissions()
+                                    }
+                                }
+                            },
+                            role = Role.Switch
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Playback Audio Detection (Moaning)",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Uses internal playback audio (no mic) via YAMNet AI; needs Audio + Capture permission",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Switch(checked = intimateAudioEnabled, onCheckedChange = null)
+                }
+
+                if (intimateGuardEnabled && intimateAudioEnabled && (!hasAudioPermission || !hasMediaProjection)) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedButton(onClick = onRequestAudioPermissions) {
+                        Text("Grant Audio + Screen Permission")
+                    }
+                }
+
+                Divider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
+
+                Text(
+                    text = "When Intimate Scene Triggers",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                IntimateActionMode.entries.forEach { mode ->
+                    BlurStyleOption(
+                        label = mode.displayName,
+                        description = mode.description,
+                        selected = intimateActionMode == mode,
+                        onClick = {
+                            coroutineScope.launch { preferencesManager.setIntimateActionMode(mode) }
+                        }
+                    )
+                }
+
+                Divider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
+
+                Text(
+                    text = "DRM Apps (Netflix, Prime Video, Hotstar)",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                DrmAppPolicy.entries.forEach { policy ->
+                    BlurStyleOption(
+                        label = policy.displayName,
+                        description = policy.description,
+                        selected = drmAppPolicy == policy,
+                        onClick = {
+                            if (drmAppPolicy == DrmAppPolicy.AUTO_BLOCK && policy != DrmAppPolicy.AUTO_BLOCK) {
+                                pendingChallengeTitle = "Relax DRM App Policy"
+                                pendingChallengeAction = {
+                                    coroutineScope.launch { preferencesManager.setDrmAppPolicy(policy) }
+                                }
+                            } else {
+                                coroutineScope.launch { preferencesManager.setDrmAppPolicy(policy) }
+                            }
+                        }
+                    )
+                }
             }
         }
 

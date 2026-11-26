@@ -38,6 +38,7 @@ class OverlayManager(private val context: Context) {
 
     private val overlayView = BlurOverlayView(context)
     private var bannerView: LinearLayout? = null
+    private var intimateShieldView: LinearLayout? = null
     private var lockoutView: LinearLayout? = null
     private var lockoutCountdownText: TextView? = null
     private var lockoutUnlockButton: Button? = null
@@ -294,9 +295,75 @@ class OverlayManager(private val context: Context) {
         }
     }
 
+    /**
+     * Covers the entire screen immediately ("blur first") when an intimate video/audio scene triggers,
+     * while remaining non-touchable so Accessibility gestures (skip / next reel) pass through underneath.
+     */
+    fun showIntimateShieldOverlay(reason: String, actionDetail: String) {
+        mainHandler.post {
+            hideIntimateShieldImmediate()
+            val container = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(64, 80, 64, 80)
+                setBackgroundColor(Color.argb(248, 8, 12, 22))
+            }
+            val titleTv = TextView(context).apply {
+                text = "SaveGaze Shield Active"
+                setTextColor(Color.rgb(244, 63, 94))
+                textSize = 20f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+            }
+            val reasonTv = TextView(context).apply {
+                text = "$reason\n$actionDetail"
+                setTextColor(Color.rgb(226, 232, 240))
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setPadding(0, 18, 0, 0)
+            }
+            container.addView(titleTv)
+            container.addView(reasonTv)
+
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                    or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                    or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+            }
+
+            try {
+                windowManager.addView(container, lp)
+                intimateShieldView = container
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to show intimate shield overlay", e)
+            }
+        }
+    }
+
+    fun hideIntimateShieldOverlay() {
+        mainHandler.post { hideIntimateShieldImmediate() }
+    }
+
+    private fun hideIntimateShieldImmediate() {
+        intimateShieldView?.let { v ->
+            try {
+                windowManager.removeView(v)
+            } catch (_: Exception) {
+            }
+        }
+        intimateShieldView = null
+    }
+
     fun destroy() {
         mainHandler.post {
             removeBannerImmediate()
+            hideIntimateShieldImmediate()
             hideLockoutOverlay()
             clearBlurRegions()
             hideOverlay()

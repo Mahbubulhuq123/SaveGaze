@@ -1,10 +1,14 @@
 package com.savegaze
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -50,6 +54,19 @@ import com.savegaze.update.UpdateStatus
 class MainActivity : ComponentActivity() {
 
     private var hasProjectionPermission by mutableStateOf(false)
+    private var hasAudioPermission by mutableStateOf(false)
+
+    private val audioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasAudioPermission = isGranted
+        if (isGranted) {
+            SaveGazeAccessibilityService.refreshAudioCapture()
+            if (!hasProjectionPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                requestScreenCapturePermission()
+            }
+        }
+    }
 
     private val mediaProjectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -57,6 +74,21 @@ class MainActivity : ComponentActivity() {
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             SaveGazeAccessibilityService.setMediaProjectionResult(result.resultCode, result.data!!)
             hasProjectionPermission = true
+        }
+    }
+
+    fun requestIntimateAudioPermissions() {
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        hasAudioPermission = granted
+        if (!granted) {
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else if (!hasProjectionPermission) {
+            requestScreenCapturePermission()
+        } else {
+            SaveGazeAccessibilityService.refreshAudioCapture()
         }
     }
 
@@ -92,6 +124,10 @@ class MainActivity : ComponentActivity() {
         }
 
         hasProjectionPermission = SaveGazeAccessibilityService.hasMediaProjection()
+        hasAudioPermission = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
         val preferencesManager = PreferencesManager(applicationContext)
         val updateManager = AppUpdateManager.getInstance(applicationContext)
 
@@ -101,7 +137,9 @@ class MainActivity : ComponentActivity() {
                     preferencesManager = preferencesManager,
                     updateManager = updateManager,
                     hasMediaProjection = hasProjectionPermission,
+                    hasAudioPermission = hasAudioPermission,
                     onRequestMediaProjection = { requestScreenCapturePermission() },
+                    onRequestAudioPermissions = { requestIntimateAudioPermissions() },
                     onRequestVpnStart = { requestStartVpnBlocker() },
                     onStopVpn = { SaveGazeVpnService.stop(applicationContext) }
                 )
@@ -120,7 +158,9 @@ private fun SaveGazeApp(
     preferencesManager: PreferencesManager,
     updateManager: AppUpdateManager,
     hasMediaProjection: Boolean,
+    hasAudioPermission: Boolean,
     onRequestMediaProjection: () -> Unit,
+    onRequestAudioPermissions: () -> Unit,
     onRequestVpnStart: () -> Unit,
     onStopVpn: () -> Unit
 ) {
@@ -200,7 +240,9 @@ private fun SaveGazeApp(
                 onOpenGuard = { selectedTab = 1 },
                 onRequestVpnStart = onRequestVpnStart,
                 hasMediaProjection = hasMediaProjection,
+                hasAudioPermission = hasAudioPermission,
                 onRequestMediaProjection = onRequestMediaProjection,
+                onRequestAudioPermissions = onRequestAudioPermissions,
                 modifier = Modifier.padding(innerPadding)
             )
             1 -> GuardScreen(
@@ -214,6 +256,9 @@ private fun SaveGazeApp(
                 updateManager = updateManager,
                 sectionToReveal = pendingSettingsSection,
                 onSectionRevealed = { pendingSettingsSection = null },
+                hasAudioPermission = hasAudioPermission,
+                hasMediaProjection = hasMediaProjection,
+                onRequestAudioPermissions = onRequestAudioPermissions,
                 modifier = Modifier.padding(innerPadding)
             )
         }

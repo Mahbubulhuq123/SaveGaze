@@ -6,6 +6,7 @@
     android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
     android:canTakeScreenshot="true"
+    android:canPerformGestures="true"
     android:notificationTimeout="300"
     android:settingsActivity="com.savegaze.MainActivity" />
 

@@ -164,4 +164,22 @@ object ContentGuardLists {
         "com.google.android.packageinstaller",
         "com.android.packageinstaller"
     )
+
+    val DRM_PROTECTED_PACKAGES: Set<String> = setOf(
+        "com.netflix.mediaclient",
+        "com.amazon.avod.thirdpartyclient",
+        "com.disney.disneyplus",
+        "in.startv.hotstar",
+        "com.hulu.plus",
+        "com.wbd.stream",
+        "com.hbo.hbonow",
+        "com.apple.atve.android.appletv",
+        "com.crunchyroll.crunchyroid",
+        "com.sonyliv",
+        "com.graymatrix.did",
+        "com.viewlift.hoichoi",
+        "com.bongo",
+        "com.chorki",
+        "com.banglalink.toffee"
+    )
 }
