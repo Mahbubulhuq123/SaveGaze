@@ -355,13 +355,6 @@ class NudeNetDetector(
                 }
             }
 
-            val protectedFaces = when {
-                !blurFaces -> correctedFaces.map { it.box }
-                genderFilter == GenderFilter.FEMALE_ONLY -> updatedMaleFaces.map { it.box }
-                genderFilter == GenderFilter.MALE_ONLY -> updatedFemaleFaces.map { it.box }
-                else -> emptyList()
-            }
-
             val sceneHasFemaleFace = updatedFemaleFaces.isNotEmpty()
             val sceneHasMaleFace = updatedMaleFaces.isNotEmpty()
 
@@ -463,6 +456,23 @@ class NudeNetDetector(
                 }
             }
 
+            val keptBodyFaces = keptBodyClusters.flatMap { it.faces }.toSet()
+            val protectedFaces = when {
+                !blurFaces -> correctedFaces.map { f ->
+                    if (f in keptBodyFaces) {
+                        // Protect eyes/nose/upper face while letting body blur cover throat/neck up to the jawline
+                        val jawBottom = (f.box.y2 - f.box.height * 0.14f)
+                            .coerceAtLeast(f.box.y1 + f.box.height * 0.72f)
+                        BoundingBox(f.box.x1, f.box.y1, f.box.x2, jawBottom)
+                    } else {
+                        f.box
+                    }
+                }
+                genderFilter == GenderFilter.FEMALE_ONLY -> updatedMaleFaces.map { it.box }
+                genderFilter == GenderFilter.MALE_ONLY -> updatedFemaleFaces.map { it.box }
+                else -> emptyList()
+            }
+
             // Strip any intimate part directly under an opposite-gender face or opposite-gender person cluster
             val oppositeGenderClusters = when (genderFilter) {
                 GenderFilter.FEMALE_ONLY -> clusters.filter { clusterGenderMap[it] == ClusterGender.MALE }
@@ -500,11 +510,13 @@ class NudeNetDetector(
                         val left = minOf((personCenterX - halfW).coerceAtLeast(0f), partMinX - 10f).coerceAtLeast(0f)
                         val right = maxOf(personCenterX + halfW, partMaxX + 10f)
 
-                        // A4: When face blurring is ON, smoothly encompass head & face too; otherwise start cleanly at chin line
+                        // A4: When face blurring is ON, cover head & face; otherwise reach smoothly up through the throat/neck to the jaw line
                         val topY = if (blurFaces) {
                             minOf(padFaceBox(face.box).y1, pBox?.y1 ?: face.box.y1)
                         } else {
-                            (face.box.y2 - 2f).coerceAtLeast(0f)
+                            (face.box.y2 - faceH * 0.14f)
+                                .coerceAtLeast(face.box.y1 + faceH * 0.72f)
+                                .coerceAtLeast(0f)
                         }
 
                         val hasLower = partsInCluster.any {
@@ -534,6 +546,8 @@ class NudeNetDetector(
                     } else {
                         val partW = maxOf(partMaxX - partMinX, 1f)
                         val partH = maxOf(partMaxY - partMinY, 1f)
+                        val topPart = partsInCluster.minByOrNull { it.box.y1 }!!
+                        val topPartH = maxOf(topPart.box.height, 1f)
                         val padX = maxOf(partW * 0.32f, 24f)
                         val left = (partMinX - padX).coerceAtLeast(0f)
                         val right = partMaxX + padX
@@ -542,10 +556,17 @@ class NudeNetDetector(
                                 it.label == NudeLabel.BUTTOCKS_COVERED ||
                                 it.label == NudeLabel.ANUS_EXPOSED
                         }
-                        val topY = if (hasBacksideOnly) {
-                            (partMinY - partH * 2.2f).coerceAtLeast(0f)
-                        } else {
-                            (partMinY - partH * 0.35f).coerceAtLeast(0f)
+                        val hasUpperChest = partsInCluster.any {
+                            it.label == NudeLabel.FEMALE_BREAST_COVERED ||
+                                it.label == NudeLabel.FEMALE_BREAST_EXPOSED ||
+                                it.label == NudeLabel.MALE_BREAST_EXPOSED ||
+                                it.label == NudeLabel.ARMPITS_EXPOSED
+                        }
+                        val topY = when {
+                            hasBacksideOnly -> (partMinY - topPartH * 2.2f).coerceAtLeast(0f)
+                            blurFaces && hasUpperChest -> (partMinY - topPartH * 1.45f).coerceAtLeast(0f)
+                            hasUpperChest -> (partMinY - topPartH * 0.78f).coerceAtLeast(0f)
+                            else -> (partMinY - topPartH * 1.25f).coerceAtLeast(0f)
                         }
                         val naturalBottomY = partMaxY + partH * 0.45f
                         val containerBottom = bitmap?.findMediaContainerBottom(partMaxY, clusterBounds) ?: Float.MAX_VALUE

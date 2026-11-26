@@ -75,7 +75,7 @@ class HybridGenderFilterTest {
         val face = Detection(NudeLabel.FACE_FEMALE, 0.88f, BoundingBox(180f, 100f, 300f, 220f))
         val cleavage = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.65f, BoundingBox(170f, 280f, 310f, 400f))
 
-        // Face Blurring OFF -> whole body below chin (y >= ~218..930), face protected
+        // Face Blurring OFF -> whole body from neck/jawline down (y ~ 203..930), upper face protected
         val bodyOnly = NudeNetDetector.filterDetectionsPure(
             detections = listOf(face, cleavage),
             personDetections = listOf(woman),
@@ -86,8 +86,9 @@ class HybridGenderFilterTest {
         assertEquals(1, bodyOnly.mergedBlurBoxes.size)
         val bodyShield = bodyOnly.mergedBlurBoxes.first()
         assertTrue("Whole body covers torso + legs", bodyShield.y2 >= 900f)
-        assertTrue("Starts below chin when face blurring OFF", bodyShield.y1 >= 210f)
+        assertTrue("Reaches neck/jawline while keeping upper face clear", bodyShield.y1 in 186f..212f)
         assertEquals(1, bodyOnly.protectedFaces.size)
+        assertTrue("Protected face clip ends at jawline so throat stays blurred", bodyOnly.protectedFaces.first().y2 <= 212f)
 
         // Face Blurring ON -> unified seamless blur covering forehead + face + whole body
         val bodyAndFace = NudeNetDetector.filterDetectionsPure(
