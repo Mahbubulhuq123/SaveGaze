@@ -144,6 +144,7 @@ fun HomeScreen(
     hasAudioPermission: Boolean = true,
     onRequestMediaProjection: () -> Unit = {},
     onRequestAudioPermissions: () -> Unit = {},
+    onStopAudioCast: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -180,7 +181,7 @@ fun HomeScreen(
     val blurStyle by preferencesManager.blurStyleFlow.collectAsState(initial = BlurStyle.SOLID_BLACK)
     val blurOpacity by preferencesManager.blurOpacityFlow.collectAsState(initial = 100)
     val intimateGuardEnabled by preferencesManager.intimateGuardEnabledFlow.collectAsState(initial = true)
-    val intimateAudioEnabled by preferencesManager.intimateAudioEnabledFlow.collectAsState(initial = true)
+    val intimateAudioEnabled by preferencesManager.intimateAudioEnabledFlow.collectAsState(initial = false)
 
     // Re-check on every resume so returning from system Accessibility settings updates the card.
     DisposableEffect(lifecycleOwner, context) {
@@ -633,9 +634,16 @@ fun HomeScreen(
                         }
                     }
 
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && intimateGuardEnabled && intimateAudioEnabled) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && intimateGuardEnabled) {
                         Spacer(modifier = Modifier.height(10.dp))
-                        if (!hasAudioPermission || !hasMediaProjection) {
+                        if (!intimateAudioEnabled) {
+                            Text(
+                                text = "Screen Cast OFF • Visual & Caption Guard Active (Low Battery)",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color(0xFF2E7D32),
+                                textAlign = TextAlign.Center
+                            )
+                        } else if (!hasAudioPermission || !hasMediaProjection) {
                             Button(
                                 onClick = onRequestAudioPermissions,
                                 colors = ButtonDefaults.buttonColors(
@@ -649,7 +657,7 @@ fun HomeScreen(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Enable Intimate Audio Guard")
+                                Text("Enable Audio AI (Uses Screen Cast)")
                             }
                         } else {
                             Row(
@@ -664,10 +672,23 @@ fun HomeScreen(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Intimate Audio & Scene Guard Active",
+                                    text = "Audio AI + Screen Cast Active",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = Color(0xFF2E7D32)
                                 )
+                            }
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                androidx.compose.material3.OutlinedButton(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            preferencesManager.setIntimateAudioEnabled(false)
+                                        }
+                                        onStopAudioCast()
+                                    }
+                                ) {
+                                    Text("Turn Off Screen Cast (Save Battery)")
+                                }
                             }
                         }
                     }

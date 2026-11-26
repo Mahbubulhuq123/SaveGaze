@@ -184,7 +184,7 @@ class PreferencesManager(private val context: Context) {
     }
 
     val intimateAudioEnabledFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
-        prefs[Keys.INTIMATE_AUDIO_ENABLED] ?: true
+        prefs[Keys.INTIMATE_AUDIO_ENABLED] ?: false
     }
 
     val intimateActionModeFlow: Flow<IntimateActionMode> = context.dataStore.data.map { prefs ->

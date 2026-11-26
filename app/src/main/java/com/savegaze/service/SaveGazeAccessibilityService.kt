@@ -3,6 +3,7 @@ package com.savegaze.service
 import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.app.KeyguardManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -25,6 +26,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.PowerManager
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
@@ -48,8 +50,10 @@ import com.savegaze.ml.BoundingBox
 import com.savegaze.ml.Detection
 import com.savegaze.ml.GenderFilter
 import com.savegaze.ml.GenderPersonDetector
+import com.savegaze.ml.IntimateCaptionRules
 import com.savegaze.ml.IntimateSceneDetector
 import com.savegaze.ml.IntimateSceneRules
+import com.savegaze.ml.IntimateSignals
 import com.savegaze.ml.NudeNetDetector
 import com.savegaze.ml.PersonGenderBox
 import com.savegaze.ml.SceneSafetyScores
@@ -110,6 +114,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
         fun clearLockoutUi() {
             instance?.overlayManager?.hideLockoutOverlay()
+        }
+
+        fun stopScreenCastIfOptional() {
+            mediaProjectionData = null
+            mediaProjectionResultCode = 0
+            instance?.serviceScope?.launch(Dispatchers.Main) {
+                instance?.releaseMediaProjectionAudioOnly()
+            }
         }
 
         fun refreshAudioCapture() {
@@ -173,7 +185,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     // Intimate Video & Audio Guard state
     @Volatile private var isProtectionEnabled = true
     @Volatile private var intimateGuardEnabled = true
-    @Volatile private var intimateAudioEnabled = true
+    @Volatile private var intimateAudioEnabled = false
     @Volatile private var intimateActionMode = IntimateActionMode.SMART_CONTEXT
     @Volatile private var drmAppPolicy = DrmAppPolicy.WARN_ONLY
     @Volatile private var lastTreeHints: Set<String> = emptySet()
@@ -181,11 +193,15 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     @Volatile private var lastSceneSafety: SceneSafetyScores? = null
     @Volatile private var lastAudioResult = AudioIntimateResult(0f, "", 0f, false)
     @Volatile private var lastAudioScoredMs = 0L
+    private var lastFullInferenceMs = 0L
+    private var changedFrameCounter = 0
     private var consecutiveIntimateHits = 0
     private var consecutiveAudioHits = 0
     private var consecutiveSkipsOnSameVideo = 0
     private var lastIntimateActionMs = 0L
     private val drmWarnedPackages = mutableSetOf<String>()
+    private var powerManager: PowerManager? = null
+    private var keyguardManager: KeyguardManager? = null
 
     private data class TrackedBox(
         var box: BoundingBox,
@@ -198,6 +214,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         isRunning = true
+        powerManager = getSystemService(POWER_SERVICE) as? PowerManager
+        keyguardManager = getSystemService(KEYGUARD_SERVICE) as? KeyguardManager
         publishHealth { ProtectionHealth(serviceRunning = true) }
 
         preferencesManager = PreferencesManager(this)
@@ -343,6 +361,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 intimateAudioEnabled = enabled
                 if (!enabled) {
                     audioIntimateDetector?.stop()
+                    releaseMediaProjectionAudioOnly()
                 } else {
                     startAudioCaptureIfReady()
                 }
@@ -384,7 +403,18 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             syncLockoutOverlay()
         }
 
-        if (pkg == "com.android.systemui" || pkg == packageName) return
+        if (pkg == "com.android.systemui" || pkg == packageName) {
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg != lastForegroundPackage) {
+                lastForegroundPackage = pkg
+                if (pkg == packageName) {
+                    trackedBoxes.clear()
+                    activeBlurBoxes = emptyList()
+                    lastScreenSignature = null
+                    overlayManager?.clearBlurRegions()
+                }
+            }
+            return
+        }
 
         val now = System.currentTimeMillis()
 
@@ -457,7 +487,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 if (now - lastGuardCheckMs >= 450L) {
                     checkContentGuardWindow(pkg, forceCheck = false)
                 }
-                if (now - lastContentTriggerMs >= 160L) {
+                if (now - lastContentTriggerMs >= 320L) {
                     lastContentTriggerMs = now
                     serviceScope.launch {
                         if (preferencesManager?.getIsEnabled() == true) performScan()
@@ -560,6 +590,23 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                         return
                     }
                 }
+
+                // Zero-cast subtitle/caption intimate scene detection
+                if (intimateGuardEnabled && isProtectionEnabled && !intimateActionInProgress.get() && allText.isNotEmpty()) {
+                    val captionHit = IntimateCaptionRules.detectIntimateCaption(allText)
+                    if (captionHit != null && (System.currentTimeMillis() - lastIntimateActionMs >= 2_500L)) {
+                        triggerIntimateAction(
+                            IntimateSignals(
+                                triggered = true,
+                                instant = true,
+                                reason = "Intimate Caption ($captionHit)",
+                                confidence = 0.85f,
+                                isKissOrBedCue = false
+                            )
+                        )
+                        return
+                    }
+                }
             }
         } finally {
             @Suppress("DEPRECATION")
@@ -655,33 +702,79 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         cleanup()
     }
 
+    private fun isScreenAwakeAndUnlocked(): Boolean {
+        val screenOn = powerManager?.isInteractive ?: true
+        if (!screenOn) return false
+        val locked = keyguardManager?.isKeyguardLocked ?: false
+        return !locked
+    }
+
+    private fun isIdleOrSystemPackage(pkg: String?): Boolean {
+        if (pkg.isNullOrBlank()) return false
+        return pkg == packageName ||
+            pkg == "com.android.systemui" ||
+            pkg in ContentGuardLists.SETTINGS_PACKAGES ||
+            pkg in ContentGuardLists.SKIP_TEXT_GUARD_PACKAGES ||
+            pkg.contains("launcher", ignoreCase = true) ||
+            pkg.contains("inputmethod", ignoreCase = true) ||
+            pkg.contains("keyboard", ignoreCase = true) ||
+            pkg.contains("gboard", ignoreCase = true)
+    }
+
+    private fun releaseMediaProjectionAudioOnly() {
+        // On Android 11+, screenshots use AccessibilityService.takeScreenshot(); stop MediaProjection cleanly so Screen Cast ends immediately
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            mediaProjection?.stop()
+            mediaProjection = null
+            mediaProjectionData = null
+            mediaProjectionResultCode = 0
+            showPersistentNotification(paused = !isProtectionEnabled, requireProjectionFgs = false)
+        }
+    }
+
     private fun startScanningLoop() {
         scanJob?.cancel()
         scanJob = serviceScope.launch {
             while (isActive) {
                 try {
-                    val enabled = preferencesManager?.getIsEnabled() ?: true
-                    if (enabled) {
+                    if (!isScreenAwakeAndUnlocked()) {
+                        if (activeBlurBoxes.isNotEmpty()) {
+                            trackedBoxes.clear()
+                            activeBlurBoxes = emptyList()
+                            overlayManager?.clearBlurRegions()
+                        }
+                        delay(1_500L)
+                        continue
+                    }
+
+                    val enabled = isProtectionEnabled
+                    if (enabled && !isIdleOrSystemPackage(lastForegroundPackage)) {
                         performScan()
                     } else {
-                        overlayManager?.clearBlurRegions()
+                        if (activeBlurBoxes.isNotEmpty()) {
+                            trackedBoxes.clear()
+                            activeBlurBoxes = emptyList()
+                            overlayManager?.clearBlurRegions()
+                        }
                     }
 
                     val baseInterval = preferencesManager?.getScanInterval() ?: 250L
-                    val interval = if (activeBlurBoxes.isNotEmpty() && !lastScreenIsStatic) {
-                        minOf(baseInterval, 130L)
-                    } else {
-                        minOf(baseInterval, 220L)
+                    val interval = when {
+                        !enabled || isIdleOrSystemPackage(lastForegroundPackage) -> 1_100L
+                        lastScreenIsStatic -> 950L
+                        activeBlurBoxes.isNotEmpty() -> minOf(maxOf(baseInterval, 240L), 300L)
+                        else -> minOf(maxOf(baseInterval, 260L), 340L)
                     }
                     delay(interval)
                 } catch (_: Exception) {
-                    delay(250L)
+                    delay(400L)
                 }
             }
         }
     }
 
     private fun performScan() {
+        if (!isScreenAwakeAndUnlocked() || isIdleOrSystemPackage(lastForegroundPackage)) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!scanning.compareAndSet(false, true)) return
             performNativeScreenshot()
@@ -802,20 +895,20 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     }
 
     private fun handleAudioResult(result: AudioIntimateResult) {
-        if (!intimateGuardEnabled || !intimateAudioEnabled) return
+        if (!isProtectionEnabled || !intimateGuardEnabled || !intimateAudioEnabled) return
         if (intimateActionInProgress.get()) return
         val pkg = lastForegroundPackage ?: return
-        if (pkg == packageName || pkg == "com.android.systemui" || pkg in ContentGuardLists.SETTINGS_PACKAGES) return
+        if (isIdleOrSystemPackage(pkg)) return
 
-        if (result.score >= 0.45f) {
+        if (result.score >= 0.55f && result.topLabel.isNotBlank()) {
             consecutiveAudioHits++
-            if (consecutiveAudioHits >= 2) {
+            if (consecutiveAudioHits >= 3) {
                 consecutiveAudioHits = 0
                 serviceScope.launch(Dispatchers.Main) {
-                    val signals = com.savegaze.ml.IntimateSignals(
+                    val signals = IntimateSignals(
                         triggered = true,
                         instant = true,
-                        reason = if (result.topLabel.isNotBlank()) "Intimate Audio (${result.topLabel})" else "Intimate Audio",
+                        reason = "Intimate Audio (${result.topLabel})",
                         confidence = result.score,
                         isKissOrBedCue = false
                     )
@@ -886,18 +979,42 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 return
             }
 
+            val now = System.currentTimeMillis()
+            val didScrollRecently = userJustScrolled && (now - lastScrollTimestamp < 450L)
+            if (userJustScrolled && !didScrollRecently) {
+                userJustScrolled = false
+            }
+
+            // Compute screen change BEFORE running heavy ONNX networks so static screens cost ~0% CPU
+            val allExcluded = activeBlurBoxes + trackedBoxes.map { it.box }
+            val currentSignature = computeScreenSignature(bitmap, allExcluded)
+            val screenChange = analyzeScreenChange(lastScreenSignature, currentSignature)
+            lastScreenIsStatic = screenChange.isStatic
+
+            if (screenChange.isStatic && !didScrollRecently && (now - lastFullInferenceMs < 2_500L)) {
+                publishHealth {
+                    it.copy(
+                        lastFrameAtMillis = now,
+                        lastError = if (it.overlayActive) null else it.lastError
+                    )
+                }
+                return
+            }
+            lastFullInferenceMs = now
+
             val bWidth = bitmap.width.toFloat()
             val bHeight = bitmap.height.toFloat()
-            val sensitivity = preferencesManager?.getSensitivity() ?: 0.25f
+            val sensitivity = currentSensitivity
             currentDetector.confidenceThreshold = sensitivity
             genderPersonDetector?.confidenceThreshold = (sensitivity + 0.02f).coerceIn(0.22f, 0.45f)
 
-            // Run PordaV4x3 person/gender + NudeNet + SwiftFormer Scene Safety concurrently on Dispatchers.Default
-            val runSceneClassifier = intimateGuardEnabled &&
-                (!lastScreenIsStatic || activeBlurBoxes.isNotEmpty() || (System.currentTimeMillis() - lastAudioScoredMs < 2_000L && lastAudioResult.score >= 0.18f))
+            val runQuadrantTiles = didScrollRecently || screenChange.isSceneCut || (changedFrameCounter++ % 4 == 0)
+            val recentAudioActive = now - lastAudioScoredMs < 2_000L && lastAudioResult.score >= 0.25f
 
+            // Run NudeNet + PordaV4x3 + SwiftFormer concurrently on Dispatchers.Default
+            val runSceneClassifier = intimateGuardEnabled && (!screenChange.isStatic || activeBlurBoxes.isNotEmpty() || recentAudioActive)
             val (detections: List<Detection>, personBoxes: List<PersonGenderBox>, sceneSafety: SceneSafetyScores?) = withContext(Dispatchers.Default) {
-                val nudeJob = async { currentDetector.detect(bitmap) }
+                val nudeJob = async { currentDetector.detect(bitmap, includeQuadrants = runQuadrantTiles) }
                 val genderJob = async { genderPersonDetector?.detect(bitmap) ?: emptyList() }
                 val safetyJob = async { if (runSceneClassifier) intimateSceneDetector?.classify(bitmap) else null }
                 Triple(nudeJob.await(), genderJob.await(), safetyJob.await())
@@ -922,17 +1039,6 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 blurFaces = shouldBlurFaces,
                 bitmap = bitmap
             )
-
-            val allExcluded = activeBlurBoxes + trackedBoxes.map { it.box }
-            val currentSignature = computeScreenSignature(bitmap, allExcluded)
-            val screenChange = analyzeScreenChange(lastScreenSignature, currentSignature)
-            lastScreenIsStatic = screenChange.isStatic
-
-            val now = System.currentTimeMillis()
-            val didScrollRecently = userJustScrolled && (now - lastScrollTimestamp < 450L)
-            if (userJustScrolled && !didScrollRecently) {
-                userJustScrolled = false
-            }
 
             val matchingFaces = when (genderFilter) {
                 GenderFilter.BOTH -> filtered.faces

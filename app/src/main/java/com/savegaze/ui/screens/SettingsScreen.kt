@@ -147,7 +147,7 @@ fun SettingsScreen(
     var sliderOpacity by remember { mutableFloatStateOf(blurOpacity.toFloat()) }
     val blurFaces by preferencesManager.blurFacesFlow.collectAsState(initial = false)
     val intimateGuardEnabled by preferencesManager.intimateGuardEnabledFlow.collectAsState(initial = true)
-    val intimateAudioEnabled by preferencesManager.intimateAudioEnabledFlow.collectAsState(initial = true)
+    val intimateAudioEnabled by preferencesManager.intimateAudioEnabledFlow.collectAsState(initial = false)
     val intimateActionMode by preferencesManager.intimateActionModeFlow.collectAsState(initial = IntimateActionMode.SMART_CONTEXT)
     val drmAppPolicy by preferencesManager.drmAppPolicyFlow.collectAsState(initial = DrmAppPolicy.WARN_ONLY)
     val tamperEnabled by preferencesManager.tamperGuardEnabledFlow.collectAsState(initial = false)
@@ -390,10 +390,8 @@ fun SettingsScreen(
                             value = intimateAudioEnabled,
                             onValueChange = { wantOn ->
                                 if (!wantOn) {
-                                    pendingChallengeTitle = "Disable Intimate Audio Detection"
-                                    pendingChallengeAction = {
-                                        coroutineScope.launch { preferencesManager.setIntimateAudioEnabled(false) }
-                                    }
+                                    coroutineScope.launch { preferencesManager.setIntimateAudioEnabled(false) }
+                                    com.savegaze.service.SaveGazeAccessibilityService.stopScreenCastIfOptional()
                                 } else {
                                     coroutineScope.launch { preferencesManager.setIntimateAudioEnabled(true) }
                                     if (!hasAudioPermission || !hasMediaProjection) {
@@ -408,12 +406,12 @@ fun SettingsScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Playback Audio Detection (Moaning)",
+                            text = "Playback Audio AI (Uses Screen Cast)",
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium
                         )
                         Text(
-                            text = "Uses internal playback audio (no mic) via YAMNet AI; needs Audio + Capture permission",
+                            text = "Off by default for zero Screen Cast battery drain (visual & subtitle guard stay active). Only captures playback while media plays.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

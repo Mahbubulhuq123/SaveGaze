@@ -79,8 +79,8 @@ object IntimateSceneRules {
                     val maxH = max(f1.box.height, f2.box.height)
                     val dist = hypot(f1.box.centerX - f2.box.centerX, f1.box.centerY - f2.box.centerY)
 
-                    // Direct cheek-to-cheek / kissing proximity
-                    if (hGap <= avgW * 0.25f && vDiff <= maxH * 0.60f && dist <= avgW * 1.30f) {
+                    // Direct kissing / touching cheeks proximity (tight overlap/gap to prevent false triggers on distant talking heads)
+                    if (hGap <= avgW * 0.08f && vDiff <= maxH * 0.55f && dist <= avgW * 1.15f) {
                         return true
                     }
                 }
@@ -119,22 +119,20 @@ object IntimateSceneRules {
         screenH: Float,
         sensitivity: Float = 0.25f
     ): IntimateSignals {
-        val explicitThresh = sensitivity.coerceIn(0.24f, 0.45f)
+        val explicitThresh = sensitivity.coerceIn(0.26f, 0.45f)
         val hasExplicit = detections.any { it.label in EXPLICIT_NUDITY_LABELS && it.confidence >= explicitThresh }
+        val highExplicit = detections.any { it.label in EXPLICIT_NUDITY_LABELS && it.confidence >= 0.62f }
         val hasSemiNude = detections.any { it.label in SEMI_NUDE_LABELS && it.confidence >= sensitivity }
         val faces = detections.filter { it.label.isFace }
-        val maxFaceRatio = if (screenH > 0f && faces.isNotEmpty()) {
-            faces.maxOf { it.box.height } / screenH
-        } else 0f
 
         val nsfwProb = sceneSafety?.nsfw ?: 0f
         val kissOrBedCue = hasCloseUpKissingOrEmbrace(faces, personBoxes, screenW, screenH)
 
-        // 1. Explicit visual nudity confirmed by scene classifier or high NudeNet score
-        if (hasExplicit && (nsfwProb >= 0.35f || detections.any { it.label in EXPLICIT_NUDITY_LABELS && it.confidence >= 0.52f })) {
+        // 1. Explicit visual nudity confirmed by scene classifier or high NudeNet confidence
+        if (hasExplicit && (nsfwProb >= 0.42f || highExplicit)) {
             return IntimateSignals(
                 triggered = true,
-                instant = true,
+                instant = highExplicit && nsfwProb >= 0.45f,
                 reason = "Explicit Scene Detected",
                 confidence = max(nsfwProb, 0.78f),
                 isKissOrBedCue = kissOrBedCue
@@ -142,34 +140,34 @@ object IntimateSceneRules {
         }
 
         // 2. Strong overall NSFW/suggestive frame (bed scenes, lingerie/partial nudity)
-        if (nsfwProb >= 0.72f) {
+        if (nsfwProb >= 0.82f) {
             return IntimateSignals(
                 triggered = true,
-                instant = nsfwProb >= 0.86f,
+                instant = nsfwProb >= 0.93f,
                 reason = "Intimate / NSFW Scene",
                 confidence = nsfwProb,
                 isKissOrBedCue = kissOrBedCue
             )
         }
 
-        // 3. Kissing / embracing / bed pose supported by scene NSFW, semi-nude cue, close-up framing, or audio
-        if (kissOrBedCue && (nsfwProb >= 0.26f || hasSemiNude || audioScore >= 0.22f || maxFaceRatio >= 0.13f)) {
+        // 3. Kissing / bed pose must have real NSFW, semi-nude, or intimate audio support (never SFW talking close-ups)
+        if (kissOrBedCue && (nsfwProb >= 0.34f || (nsfwProb >= 0.18f && (hasSemiNude || audioScore >= 0.30f)))) {
             return IntimateSignals(
                 triggered = true,
-                instant = nsfwProb >= 0.52f || (hasSemiNude && audioScore >= 0.22f),
+                instant = nsfwProb >= 0.65f || (hasSemiNude && audioScore >= 0.35f),
                 reason = "Intimate Kissing / Bed Scene",
                 confidence = max(nsfwProb, 0.58f),
                 isKissOrBedCue = true
             )
         }
 
-        // 4. Audio moaning / panting / groaning (strong alone, or moderate combined with visual cue)
-        if (audioScore >= 0.45f || (audioScore >= 0.26f && (nsfwProb >= 0.22f || hasSemiNude || kissOrBedCue))) {
-            val tag = audioLabel?.takeIf { it.isNotBlank() } ?: "Intimate Audio"
+        // 4. Audio moaning / panting / groaning (requires distinct vocal label; sustained windows for audio-only)
+        val hasVocalLabel = !audioLabel.isNullOrBlank()
+        if (hasVocalLabel && (audioScore >= 0.55f || (audioScore >= 0.35f && (nsfwProb >= 0.25f || hasSemiNude || kissOrBedCue)))) {
             return IntimateSignals(
                 triggered = true,
-                instant = audioScore >= 0.65f || nsfwProb >= 0.40f,
-                reason = "Intimate Audio ($tag)",
+                instant = false,
+                reason = "Intimate Audio ($audioLabel)",
                 confidence = max(audioScore, nsfwProb),
                 isKissOrBedCue = kissOrBedCue
             )
@@ -182,6 +180,23 @@ object IntimateSceneRules {
             confidence = max(nsfwProb, audioScore),
             isKissOrBedCue = kissOrBedCue
         )
+    }
+}
+
+/**
+ * Zero-battery, zero-Screen-Cast subtitle/CC cue detector reading explicit stage captions
+ * (e.g., "[moaning]", "[kissing]", "(groaning)") from Accessibility text nodes.
+ */
+object IntimateCaptionRules {
+    private val CAPTION_REGEX = Regex(
+        """[\[(]\s*(?:woman|girl|female|man|couple|both)?\s*(?:moaning|moans|groaning|groans|panting|heavy breathing|kissing|making out|sexual\s+\w+|orgasm)\s*[\])]""",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun detectIntimateCaption(screenText: String): String? {
+        if (screenText.isBlank()) return null
+        val match = CAPTION_REGEX.find(screenText) ?: return null
+        return match.value.trim()
     }
 }
 

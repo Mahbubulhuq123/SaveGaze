@@ -704,7 +704,7 @@ class NudeNetDetector(
         Log.d(TAG, "NudeNet model loaded successfully")
     }
 
-    suspend fun detect(bitmap: Bitmap): List<Detection> = withContext(Dispatchers.Default) {
+    suspend fun detect(bitmap: Bitmap, includeQuadrants: Boolean = true): List<Detection> = withContext(Dispatchers.Default) {
         mutex.withLock {
             if (isClosed) return@withContext emptyList()
 
@@ -716,8 +716,9 @@ class NudeNetDetector(
             // 1. Global pass
             allDetections.addAll(runInference(bitmap, 0f, 0f, originalWidth, originalHeight))
 
-            // 2. Overlapping 2x2 quadrant tiles on tall mobile screens so multi-column image grids stay crisp
-            if (aspectRatio > 1.30f && originalHeight > 600f) {
+            // 2. Overlapping 2x2 quadrant tiles on tall mobile screens (gated on adaptive cadence for battery efficiency)
+            val shouldRunTiles = includeQuadrants || allDetections.size >= 2
+            if (shouldRunTiles && aspectRatio > 1.30f && originalHeight > 600f) {
                 val quadW = (originalWidth * 0.58f).toInt().coerceAtLeast(1)
                 val rightX = (originalWidth * 0.42f).toInt().coerceIn(0, bitmap.width - 1)
                 val rightW = (bitmap.width - rightX).coerceAtLeast(1)

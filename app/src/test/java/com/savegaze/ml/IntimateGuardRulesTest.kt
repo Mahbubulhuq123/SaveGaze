@@ -13,13 +13,13 @@ class IntimateGuardRulesTest {
 
     @Test
     fun closeUpKissingWithSupportiveCueTriggersIntimateScene() {
-        val leftFace = Detection(NudeLabel.FACE_MALE, 0.85f, BoundingBox(260f, 380f, 490f, 650f))
-        val rightFace = Detection(NudeLabel.FACE_FEMALE, 0.88f, BoundingBox(470f, 390f, 700f, 660f))
+        val leftFace = Detection(NudeLabel.FACE_MALE, 0.85f, BoundingBox(260f, 380f, 500f, 650f))
+        val rightFace = Detection(NudeLabel.FACE_FEMALE, 0.88f, BoundingBox(490f, 390f, 730f, 660f))
 
         val signals = IntimateSceneRules.evaluate(
             detections = listOf(leftFace, rightFace),
             personBoxes = emptyList(),
-            sceneSafety = SceneSafetyScores(nsfl = 0.01f, nsfw = 0.34f, sfw = 0.65f),
+            sceneSafety = SceneSafetyScores(nsfl = 0.01f, nsfw = 0.36f, sfw = 0.63f),
             audioScore = 0f,
             audioLabel = null,
             screenW = 1080f,
@@ -29,6 +29,32 @@ class IntimateGuardRulesTest {
 
         assertTrue(signals.triggered)
         assertTrue(signals.isKissOrBedCue)
+    }
+
+    @Test
+    fun sfwCloseUpTalkingHeadsDoNotFalseTrigger() {
+        val leftFace = Detection(NudeLabel.FACE_MALE, 0.85f, BoundingBox(260f, 380f, 500f, 680f))
+        val rightFace = Detection(NudeLabel.FACE_FEMALE, 0.88f, BoundingBox(490f, 390f, 730f, 690f))
+
+        val signals = IntimateSceneRules.evaluate(
+            detections = listOf(leftFace, rightFace),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0.01f, nsfw = 0.06f, sfw = 0.93f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 1080f,
+            screenH = 1920f,
+            sensitivity = 0.25f
+        )
+
+        assertFalse(signals.triggered)
+    }
+
+    @Test
+    fun captionRulesDetectStageCaptionsWithoutScreenCast() {
+        assertEquals("[moaning]", IntimateCaptionRules.detectIntimateCaption("Wait for me [moaning] please"))
+        assertEquals("(kissing)", IntimateCaptionRules.detectIntimateCaption("Subtitles: (kissing)"))
+        assertEquals(null, IntimateCaptionRules.detectIntimateCaption("They are talking about dinner tonight."))
     }
 
     @Test

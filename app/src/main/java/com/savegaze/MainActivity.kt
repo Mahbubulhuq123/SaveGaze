@@ -116,6 +116,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun stopOptionalAudioCast() {
+        SaveGazeAccessibilityService.stopScreenCastIfOptional()
+        hasProjectionPermission = SaveGazeAccessibilityService.hasMediaProjection()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
@@ -140,6 +145,7 @@ class MainActivity : ComponentActivity() {
                     hasAudioPermission = hasAudioPermission,
                     onRequestMediaProjection = { requestScreenCapturePermission() },
                     onRequestAudioPermissions = { requestIntimateAudioPermissions() },
+                    onStopAudioCast = { stopOptionalAudioCast() },
                     onRequestVpnStart = { requestStartVpnBlocker() },
                     onStopVpn = { SaveGazeVpnService.stop(applicationContext) }
                 )
@@ -161,6 +167,7 @@ private fun SaveGazeApp(
     hasAudioPermission: Boolean,
     onRequestMediaProjection: () -> Unit,
     onRequestAudioPermissions: () -> Unit,
+    onStopAudioCast: () -> Unit,
     onRequestVpnStart: () -> Unit,
     onStopVpn: () -> Unit
 ) {
@@ -243,6 +250,7 @@ private fun SaveGazeApp(
                 hasAudioPermission = hasAudioPermission,
                 onRequestMediaProjection = onRequestMediaProjection,
                 onRequestAudioPermissions = onRequestAudioPermissions,
+                onStopAudioCast = onStopAudioCast,
                 modifier = Modifier.padding(innerPadding)
             )
             1 -> GuardScreen(

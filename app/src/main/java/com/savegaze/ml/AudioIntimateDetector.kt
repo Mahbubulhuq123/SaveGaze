@@ -7,15 +7,18 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.projection.MediaProjection
 import android.os.Build
+import android.os.PowerManager
 import android.os.Process
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -99,6 +102,7 @@ object AudioIntimateRules {
         val distractorDominant = cryingHigher || (distractor >= 0.50f && maxPrimary < 0.20f)
 
         val finalScore = when {
+            label.isEmpty() -> 0f
             cryingHigher -> (weighted * 0.15f).coerceIn(0f, 1f)
             distractorDominant -> (weighted * 0.25f).coerceIn(0f, 1f)
             else -> weighted.coerceIn(0f, 1f)
@@ -117,19 +121,21 @@ object AudioIntimateRules {
  * Captures internal playback audio on Android 10+ (API 29+) via AudioPlaybackCaptureConfiguration
  * without using the device microphone, and evaluates 0.975s sliding windows via YAMNet ONNX.
  */
-class AudioIntimateDetector(context: Context) {
+class AudioIntimateDetector(private val appContext: Context) {
 
     companion object {
         private const val TAG = "AudioIntimateDetector"
         private const val MODEL_FILE = "yamnet.onnx"
         private const val SAMPLE_RATE = 16_000
         private const val WINDOW_SAMPLES = 15_600 // 0.975s required by YAMNet
-        private const val HOP_SAMPLES = 7_800     // evaluate ~every 0.49s
+        private const val HOP_SAMPLES = 12_800    // evaluate ~every 0.80s to minimize CPU/battery
     }
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val session: OrtSession
     private val mutex = Mutex()
+    private val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     private var captureJob: Job? = null
     private var audioRecord: AudioRecord? = null
@@ -143,7 +149,7 @@ class AudioIntimateDetector(context: Context) {
         private set
 
     init {
-        val modelBytes = context.assets.open(MODEL_FILE).use { it.readBytes() }
+        val modelBytes = appContext.assets.open(MODEL_FILE).use { it.readBytes() }
         val opts = OrtSession.SessionOptions().apply {
             setIntraOpNumThreads(2)
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
@@ -204,6 +210,15 @@ class AudioIntimateDetector(context: Context) {
 
                 try {
                     while (isActive && record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                        val screenOn = powerManager?.isInteractive ?: true
+                        val mediaPlaying = audioManager?.isMusicActive ?: true
+                        if (!screenOn || !mediaPlaying) {
+                            ringFill = 0
+                            sinceLastHop = 0
+                            latestResult = AudioIntimateResult(0f, "", 0f, false)
+                            delay(800L)
+                            continue
+                        }
                         val read = record.read(readChunk, 0, readChunk.size)
                         if (read <= 0) continue
 
