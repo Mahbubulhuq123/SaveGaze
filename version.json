@@ -1,8 +1,8 @@
 {
-  "versionCode": 20100,
-  "versionName": "2.1",
-  "publishedAt": "2026-11-26T11:36:00Z",
-  "releaseNotes": "• Optimization: Screen Cast is now optional (OFF by default on Android 11+) — visual blurring, kissing/bed/explicit scene skip, and new zero-cast subtitle/caption intimate guard run completely without Screen Cast.\n• Battery Fix: Skips scanning when screen is OFF/locked or on launchers/settings/dialers/keyboards, checks static screens BEFORE running ONNX neural nets, runs NudeNet tiling adaptively, and gates audio YAMNet strictly on active media playback.\n• Accuracy Fix: Tightened kissing proximity + removed standalone close-up face SFW triggers to prevent false-positive skips.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.1/SaveGaze-arm64-v8a.apk",
-  "apkSize": 67884960
+  "versionCode": 20200,
+  "versionName": "2.2",
+  "publishedAt": "2026-11-26T12:25:45Z",
+  "releaseNotes": "• New: Auto Screen Cast on Movies & Long Videos — prompts an un-bypassable Audio Cast Guard when opening Stremio, Nuvio, VLC, MX Player, Kodi, Plex, MPV, YouTube long videos (excluding Shorts/Home), or fullscreen/player-controlled Browser videos (excluding web articles & Social Media).\n• New: No-Cancel Bypass — denying the Screen Cast prompt only allows retrying Screen Cast or exiting to Home.\n• Optimization: Screen Cast turns OFF automatically ~1.8s after exiting the movie or video player.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.2/SaveGaze-arm64-v8a.apk",
+  "apkSize": 67897728
 }
