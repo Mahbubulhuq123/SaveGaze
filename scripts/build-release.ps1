@@ -20,6 +20,7 @@ if (Test-Path (Join-Path $RepoRoot ".tools")) {
 }
 $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = "1"
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
+$env:DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER = "1"
 
 $DistDir = Join-Path $RepoRoot "dist"
 $AppOut = Join-Path $DistDir "SaveGaze-PC-win-x64"

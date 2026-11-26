@@ -24,8 +24,26 @@ foreach ($a in $Assets) {
 $owner = "Mahbubulhuq123"
 $repo = "SaveGaze"
 
-# Retrieve GitHub token via git credential manager without echoing it
-$credLines = @("url=https://github.com/$owner/$repo.git", "") | git credential fill
+# Retrieve GitHub token via git credential manager without UTF-8 BOM on stdin
+$prevInputEnc = [Console]::InputEncoding
+try {
+  [Console]::InputEncoding = [System.Text.Encoding]::ASCII
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = "git"
+  $psi.Arguments = "credential fill"
+  $psi.RedirectStandardInput = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $gp = [System.Diagnostics.Process]::Start($psi)
+  $gp.StandardInput.Write("protocol=https`nhost=github.com`n`n")
+  $gp.StandardInput.Close()
+  $credOut = $gp.StandardOutput.ReadToEnd()
+  $gp.WaitForExit()
+} finally {
+  [Console]::InputEncoding = $prevInputEnc
+}
+$credLines = $credOut -split "`r?`n"
 $tokenLine = $credLines | Where-Object { $_ -match '^password=' } | Select-Object -First 1
 if (-not $tokenLine) {
   throw "No GitHub token returned by git credential fill."
