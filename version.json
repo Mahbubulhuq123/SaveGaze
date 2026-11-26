@@ -1,8 +1,8 @@
 {
-  "versionCode": 20300,
-  "versionName": "2.3",
-  "publishedAt": "2026-11-26T18:00:00Z",
-  "releaseNotes": "• Fix: Female-Only Accuracy & Non-Living Object Filtering — stops blurring neutral walls/sofas/clothes (stricter YCbCr/RGB skin check + uncorroborated covered guard), prevents FACE_FEMALE->FACE_MALE flipping, and avoids Porda MALE overrides.\n• Fix: Neck/Jawline Cutout Alignment & Instant Blur — translates overlay coordinates by window location + display cutout height, switches NudeNet to letterboxed inference with landscape tiling, halves portrait strips, and tightens motion responsiveness.\n• New: MobileCLIP2-S0 Clothed Kissing Detector — async on-device CLIP vision guard catches PG-13 movie kissing & bed scenes in Nuvio, Stremio, CloudStream, etc. without slowing real-time blur.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.3/SaveGaze-arm64-v8a.apk",
-  "apkSize": 75630952
+  "versionCode": 20400,
+  "versionName": "2.4",
+  "publishedAt": "2026-11-26T18:54:00Z",
+  "releaseNotes": "• Fix: Android 14–17 Screen Cast Persistence — dedicated ScreenCastForegroundService (`foregroundServiceType=mediaProjection`), default-display MediaProjectionConfig, and ProjectionPromptActivity dismiss race fix so Screen Cast never drops shortly after granting permission.\n• Fix: Streaming Clothed Kissing & Forward Skip (Nuvio, Stremio, CloudStream) — re-calibrated MobileCLIP prompts & temperature (`logitScale=85`) with widescreen/face-centered crop, instant trigger on strong kissing frames, and HUD-wake + KEYCODE_MEDIA_FAST_FORWARD seek.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.4/SaveGaze-arm64-v8a.apk",
+  "apkSize": 75635796
 }
