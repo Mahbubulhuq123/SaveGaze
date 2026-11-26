@@ -1,161 +1,36 @@
-# SaveGaze (حفظ البصر) 🛡️
+# SaveGaze PC (حفظ البصر)
 
-**SaveGaze** is an open-source, on-device Android privacy and digital wellness utility inspired by **HaramBlur** and **BlockP**. It automatically detects, classifies, and selectively blurs semi-nude and nude content across any application on Android using on-device AI while strictly preserving human faces.
+**SaveGaze PC** is the full Windows desktop + browser extension edition of [SaveGaze](https://github.com/Mahbubulhuq123/SaveGaze), upgrading ContentGuard into a system-wide, 100% on-device AI screen shield, intimate audio/video guard, and tamper-resistant content blocker.
 
----
+## Features
 
-## ✨ Features
+1. **System-Wide AI Screen Blur Overlay (All Windows Apps)**
+   - Works across Chrome, Brave, Edge, Firefox, VLC, Stremio, Nuvio, MPV, Kodi, Telegram, and desktop apps.
+   - Runs **NudeNet v3 (`best_320s.onnx`) + PordaV4x3 (`pordav4x3.onnx`)** locally via ONNX Runtime.
+   - **Gender Filter**: `Female Only`, `Male Only`, or `Both`.
+   - **Face Blurring Toggle**: When OFF, extends body blur upward through neck/throat to the jawline while leaving upper faces visible; when ON, blurs target faces too.
+   - **Overlay Styles & Opacity**: `Solid Black`, `Dark Frosted`, `Light Censor` (50%–100% opacity), click-through layered window excluded from screen capture (`WDA_EXCLUDEFROMCAPTURE`).
+   - **Low-CPU Optimizations**: Skips scanning when Windows workstation is locked, runs a lightweight 14×14 screen-diff hash excluding active blur regions before ONNX inference, and uses adaptive tiling.
 
-1. **AI-Powered Semi-Nude & Nude Content Detection**
-   - Runs **100% on-device** using the NudeNet v3 YOLO model (`best_320s.onnx`) accelerated via ONNX Runtime.
-   - Detects 18 distinct anatomical and exposure classes (including exposed and covered intimate regions).
-   - **Zero Cloud / Absolute Privacy**: No screenshots, videos, or network requests leave your device.
+2. **Intimate Video, Scene & Audio Guard**
+   - **Visual Scene & Geometry**: `image_safety_xs.onnx` + close-up kissing & bed-pose geometry.
+   - **Windows WASAPI Loopback Audio AI**: Captures system playback audio without microphone or Screen Cast popups, gates strictly on non-silent audio RMS, and detects moaning/groaning/panting via `yamnet.onnx`.
+   - **Blur First, Then Act**: Covers the screen immediately before executing context-aware actions (Reels/Shorts → Next Reel; Video Players → Seek Forward; General Browser → Pause & Close Tab).
+   - **Subtitle/Caption & DRM Guard**: Detects `[moaning]` / `(kissing)` captions and supports Warn/Auto-Block policies for DRM apps/sites.
 
-2. **Gender Preference & Face Preservation**
-   - **Face Preservation**: Faces (`FACE_FEMALE`, `FACE_MALE`) are strictly segregated and never blurred.
-   - **Gender Filtering**:
-     - `Female Only`: Blurs female intimate areas (exposed & covered) + neutral sensitive parts.
-     - `Male Only`: Blurs male intimate areas (exposed & covered) + neutral sensitive parts.
-     - `Both`: Blurs all detected intimate areas while keeping all faces clear.
+3. **Enhanced Browser Extension & Tamper Shield**
+   - Live typing single-word blocked keyword guard inside web search bars.
+   - Domain blocking (`declarativeNetRequest` + Hosts file), Incognito/Private browsing policy lockout, and 5-in-10m cross-block cooldown lockout.
+   - Master Password + 40-second anti-paste commitment challenge for disabling shields or uninstalling.
+   - In-app GitHub Release auto-updater (`pc-v*` tags + `pc-version.json`).
 
-3. **Universal Screen-Wide Blurring (Any App)**
-   - Utilizes Android 11+ (API 30) `AccessibilityService.takeScreenshot()` at configurable intervals (~500ms).
-   - Draws smooth, non-intrusive canvas blur rectangles using `TYPE_ACCESSIBILITY_OVERLAY` (`FLAG_NOT_TOUCHABLE | FLAG_NOT_FOCUSABLE`).
-   - Touch interactions pass through seamlessly to the underlying apps.
+4. **Centralized Branding**
+   - Desktop branding/IDs live in [`src/SaveGaze.Core/BrandConfig.cs`](src/SaveGaze.Core/BrandConfig.cs).
+   - Browser extension branding/IDs live in [`extension/brand.js`](extension/brand.js).
 
-4. **Modern UI & DataStore Settings**
-   - Built with **Jetpack Compose + Material 3**.
-   - Reactive status card with a one-tap **pause/resume** master switch and a live **protection-health** panel (AI detector, screen overlay, last frame scanned).
-   - One settings surface with deep links from Home, plus sensitivity (Low / Medium / High) and blur intensity adjustment (10px–40px radius).
+## Build on Windows
 
-5. **Direct In-App Updates (No Manual Re-Downloads)**
-   - Automatically checks GitHub Releases for new updates when the app is launched.
-   - Displays an **Update Available Dialog** with release notes, version change (`v1.0 ➔ v1.1`), and download size.
-   - **One-Tap Update**: Streams and downloads the matching APK directly in-app with live progress indicators.
-   - Automatically invokes Android's package installer via secure `FileProvider` so previous versions never need to be uninstalled or manually downloaded via a browser.
-   - Manual check option available anytime in **Settings ➔ About ➔ Check for Updates**.
-
----
-
-## 🏗️ Architecture & Technology Stack
-
-| Layer | Technology |
-|---|---|
-| **Language** | Kotlin (Java 17 target) |
-| **Minimum SDK** | Android 11 (API level 30) |
-| **Target SDK** | Android 14 (API level 34) |
-| **ML Inference** | ONNX Runtime Android (`com.microsoft.onnxruntime:onnxruntime-android:1.16.3`) |
-| **AI Model** | NudeNet v3 320n YOLO detection ONNX model (packaged in assets) |
-| **Overlay Engine** | `WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY` |
-| **User Interface** | Jetpack Compose + Material 3 |
-| **Preferences** | AndroidX DataStore Preferences |
-
----
-
-## 📁 Project Structure
-
+```powershell
+# All SDK/NuGet/output artifacts stay under K:\SaveGaze-PC
+.\scripts\build-release.ps1 -Version 1.0.0
 ```
-SaveGaze/
-├── app/
-│   ├── build.gradle                          # Dependencies (Compose, ONNX, DataStore)
-│   ├── src/
-│   │   ├── main/
-│   │   │   ├── AndroidManifest.xml           # Service declaration & permissions
-│   │   │   ├── assets/
-│   │   │   │   └── best_320s.onnx            # NudeNet v3 on-device AI model (12.15 MB)
-│   │   │   ├── java/com/savegaze/
-│   │   │   │   ├── MainActivity.kt           # Compose activity & tab navigation
-│   │   │   │   ├── SaveGazeApplication.kt    # Application entry point
-│   │   │   │   ├── data/
-│   │   │   │   │   └── PreferencesManager.kt # DataStore settings management
-│   │   │   │   ├── ml/
-│   │   │   │   │   ├── DetectionResult.kt    # Enums, bounding boxes, filtered models
-│   │   │   │   │   └── NudeNetDetector.kt    # ONNX runtime inference & NMS
-│   │   │   │   ├── service/
-│   │   │   │   │   ├── OverlayManager.kt     # System overlay window manager
-│   │   │   │   │   ├── ProtectionHealth.kt   # Live detector/overlay/frame state
-│   │   │   │   │   └── SaveGazeAccessibilityService.kt # Core screenshot & blur loop
-│   │   │   │   ├── ui/
-│   │   │   │   │   ├── screens/
-│   │   │   │   │   │   ├── HomeScreen.kt     # Status, health & settings shortcuts
-│   │   │   │   │   │   └── SettingsScreen.kt # Single settings surface & deep-link anchors
-│   │   │   │   │   └── theme/
-│   │   │   │   │       └── Theme.kt          # Material 3 theme
-│   │   │   │   └── util/
-│   │   │   │       ├── BitmapUtils.kt        # CHW buffer conversion & CPU StackBlur
-│   │   │   │       └── Constants.kt          # Taxonomies & thresholds
-│   │   │   └── res/
-│   │   │       └── xml/
-│   │   │           └── accessibility_service_config.xml
-│   │   └── test/
-│   │       └── java/com/savegaze/ml/
-│   │           └── DetectionFilterTest.kt    # JUnit test suite (100% pass)
-├── build.gradle                              # Root Gradle build script
-├── settings.gradle                           # Project settings
-├── gradlew.bat                               # Gradle wrapper executable
-└── README.md
-```
-
----
-
-## 📦 Prebuilt APKs & Architecture Support
-
-SaveGaze is distributed via **[GitHub Releases](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest)** (no binary APKs committed to Git) with dedicated builds for every Android architecture as well as a universal bundle:
-
-| Package | Target Architecture | Description |
-|---|---|---|
-| **[`SaveGaze.apk`](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest/download/SaveGaze.apk)** | **Universal** (All ABIs) | Runs on **every Android phone, tablet, and emulator**. Guaranteed universal compatibility. |
-| **[`SaveGaze-arm64-v8a.apk`](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest/download/SaveGaze-arm64-v8a.apk)** | `arm64-v8a` | **Recommended for modern phones** (Samsung, Pixel, Xiaomi, OnePlus, Motorola, etc.). |
-| **[`SaveGaze-armeabi-v7a.apk`](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest/download/SaveGaze-armeabi-v7a.apk)** | `armeabi-v7a` | For older or budget 32-bit ARM Android devices. |
-| **[`SaveGaze-x86_64.apk`](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest/download/SaveGaze-x86_64.apk)** | `x86_64` | For 64-bit Android Studio emulators and ChromeOS Android subsystem. |
-| **[`SaveGaze-x86.apk`](https://github.com/Mahbubulhuq123/SaveGaze/releases/latest/download/SaveGaze-x86.apk)** | `x86` | For legacy 32-bit x86 emulators. |
-
----
-
-## 🚀 How to Build & Install
-
-### Prerequisites
-1. **JDK 17 or JDK 21** (e.g. Microsoft OpenJDK 21 or Eclipse Temurin).
-2. **Android SDK** with Platform 34 and Build-Tools 34.0.0.
-
-### 1. Build APKs
-Run the following command from the project root:
-
-```bash
-./gradlew :app:assembleRelease
-```
-
-The compiled R8-shrunk APKs for all architectures are generated at:
-```
-app/build/outputs/apk/release/
-├── SaveGaze.apk              # Universal build (all architectures)
-├── SaveGaze-arm64-v8a.apk    # 64-bit ARM
-├── SaveGaze-armeabi-v7a.apk  # 32-bit ARM
-├── SaveGaze-x86_64.apk       # 64-bit x86
-└── SaveGaze-x86.apk          # 32-bit x86
-```
-
-### 2. Install on Device or Emulator
-Connect your Android 9+ (API 28+) device via USB (or start an AVD emulator) and run:
-
-```bash
-# Universal (works on any device)
-adb install -r app/build/outputs/apk/release/SaveGaze.apk
-
-# Or install the targeted architecture directly:
-adb install -r app/build/outputs/apk/release/SaveGaze-arm64-v8a.apk
-```
-
----
-
-## 📱 Device Setup & Permissions
-
-Once installed on your device, follow these steps to enable system-wide protection:
-
-1. **Launch SaveGaze** from your app drawer.
-2. Tap the **"Protection Inactive"** card or open your phone's **Settings > Accessibility**.
-3. Under **Downloaded Apps**, select **SaveGaze**.
-4. Toggle **Use SaveGaze** to **ON** and accept the system accessibility prompt.
-5. If prompted, grant the **"Display over other apps"** permission.
-6. Open your favorite browser, social feed, or video player. Any detected semi-nude or nude content matching your gender preference will be automatically obscured with a blur overlay while faces remain clear!
-

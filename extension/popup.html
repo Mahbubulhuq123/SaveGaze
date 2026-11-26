@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SaveGaze Settings</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="cg-popup">
+    <header class="cg-header">
+      <img src="icons/48.png" class="cg-logo-img" alt="SaveGaze">
+      <div>
+        <div class="cg-title" id="brand-title">SaveGaze</div>
+        <div class="cg-native-pill" id="native-status">Checking SaveGaze PC...</div>
+      </div>
+      <div class="cg-version" id="brand-version">v1.0.0</div>
+    </header>
+
+    <section class="cg-section">
+      <h2 class="cg-section-title">Browser Protection</h2>
+      <div class="cg-toggle-row">
+        <label class="cg-toggle-label">
+          <span>Domain &amp; Live Search Keyword Guard</span>
+          <input type="checkbox" id="toggle-standard" class="cg-toggle">
+          <span class="cg-toggle-slider"></span>
+        </label>
+      </div>
+      <div class="cg-toggle-row">
+        <label class="cg-toggle-label">
+          <span>Block Incognito / Private Windows</span>
+          <input type="checkbox" id="toggle-incognito" class="cg-toggle">
+          <span class="cg-toggle-slider"></span>
+        </label>
+      </div>
+      <div class="cg-toggle-row">
+        <label class="cg-toggle-label">
+          <span>Cross-Block Screen Limit (5 in 10m)</span>
+          <input type="checkbox" id="toggle-crossblock" class="cg-toggle">
+          <span class="cg-toggle-slider"></span>
+        </label>
+      </div>
+    </section>
+
+    <section class="cg-section">
+      <h2 class="cg-section-title">Block List (Synced with SaveGaze PC)</h2>
+      <div class="cg-tabs">
+        <button class="cg-tab active" data-tab="keywords">Keywords</button>
+        <button class="cg-tab" data-tab="websites">Websites</button>
+        <button class="cg-tab" data-tab="apps">Apps</button>
+      </div>
+
+      <div class="cg-tab-panel active" id="tab-keywords">
+        <div class="cg-list-input">
+          <input type="text" id="kw-input" placeholder="Add blocked keyword...">
+          <button class="cg-btn-add" id="kw-add">Add</button>
+        </div>
+        <ul class="cg-list" id="kw-list"></ul>
+      </div>
+
+      <div class="cg-tab-panel" id="tab-websites">
+        <div class="cg-list-input">
+          <input type="text" id="ws-input" placeholder="example.com">
+          <button class="cg-btn-add" id="ws-add">Add</button>
+        </div>
+        <ul class="cg-list" id="ws-list"></ul>
+      </div>
+
+      <div class="cg-tab-panel" id="tab-apps">
+        <div class="cg-list-input">
+          <input type="text" id="app-input" placeholder="App process name...">
+          <button class="cg-btn-add" id="app-add">Add</button>
+        </div>
+        <ul class="cg-list" id="app-list"></ul>
+      </div>
+    </section>
+
+    <section class="cg-section">
+      <h2 class="cg-section-title">Master Password</h2>
+      <div class="cg-password-row">
+        <input type="password" id="pw-current" placeholder="Current password">
+        <input type="password" id="pw-new" placeholder="New password">
+        <button class="cg-btn-primary" id="pw-set">Save</button>
+      </div>
+      <div id="pw-msg" class="cg-msg"></div>
+    </section>
+
+    <div class="cg-status" id="cg-status"></div>
+    <footer class="cg-footer" id="brand-footer">
+      All scanning runs locally on your device. No data leaves your machine.
+    </footer>
+  </div>
+
+  <div id="cg-challenge-modal" class="cg-modal" style="display: none;">
+    <div class="cg-modal-content">
+      <div class="cg-modal-header">
+        <span class="cg-modal-icon">&#9888;</span>
+        <h3 id="modal-title" class="cg-modal-title">Protection Deactivation Challenge</h3>
+      </div>
+      <p id="modal-subtitle" class="cg-modal-subtitle">
+        To turn off this protection feature, enter your Master Password and accurately type the commitment sentence below.
+      </p>
+
+      <div class="cg-modal-field" id="modal-password-wrap">
+        <label for="modal-password" class="cg-modal-label">Master Password:</label>
+        <input type="password" id="modal-password" class="cg-modal-input" placeholder="Enter master password">
+      </div>
+
+      <div class="cg-modal-timer-bar">
+        <span id="modal-timer" class="cg-modal-timer">Time Remaining: 0:40</span>
+        <div class="cg-progress-bg">
+          <div id="modal-progress" class="cg-progress-fill" style="width: 100%;"></div>
+        </div>
+      </div>
+
+      <div class="cg-modal-canvas-wrap">
+        <canvas id="modal-canvas" width="340" height="95"></canvas>
+      </div>
+
+      <div class="cg-modal-field">
+        <label for="modal-input" class="cg-modal-label">Type the exact sentence (Copy-Paste blocked):</label>
+        <textarea id="modal-input" class="cg-modal-textarea" rows="3" placeholder="Type sentence exactly as shown above..."></textarea>
+      </div>
+
+      <div id="modal-status" class="cg-modal-status">0 / 0 characters matched</div>
+      <div id="modal-error" class="cg-modal-error"></div>
+
+      <div class="cg-modal-actions">
+        <button id="modal-btn-cancel" class="cg-btn-cancel">Cancel</button>
+        <button id="modal-btn-submit" class="cg-btn-submit" disabled>Verify &amp; Turn Off</button>
+      </div>
+    </div>
+  </div>
+
+<script src="brand.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

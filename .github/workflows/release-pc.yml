@@ -1,0 +1,55 @@
+name: Build & Release SaveGaze PC
+
+on:
+  push:
+    branches:
+      - pc-version
+    tags:
+      - 'pc-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release-pc:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout pc-version
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build, Test & Package Release Artifacts
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = if ($tag -match '^pc-v(.+)$') { $matches[1] } else { "1.0.0" }
+          ./scripts/build-release.ps1 -Version $ver
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: savegaze-pc-release
+          path: |
+            dist/SaveGaze-Setup-win-x64.exe
+            dist/SaveGaze-PC-win-x64.zip
+            dist/SaveGaze-Extension.zip
+            dist/pc-version.json
+
+      - name: Publish PC GitHub Release (without overriding Android latest release)
+        if: startsWith(github.ref, 'refs/tags/pc-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          make_latest: false
+          generate_release_notes: true
+          overwrite_files: true
+          files: |
+            dist/SaveGaze-Setup-win-x64.exe
+            dist/SaveGaze-PC-win-x64.zip
+            dist/SaveGaze-Extension.zip
+            dist/pc-version.json

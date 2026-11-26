@@ -1,8 +1,0 @@
-{
-  "versionCode": 20200,
-  "versionName": "2.2",
-  "publishedAt": "2026-11-26T12:25:45Z",
-  "releaseNotes": "• New: Auto Screen Cast on Movies & Long Videos — prompts an un-bypassable Audio Cast Guard when opening Stremio, Nuvio, VLC, MX Player, Kodi, Plex, MPV, YouTube long videos (excluding Shorts/Home), or fullscreen/player-controlled Browser videos (excluding web articles & Social Media).\n• New: No-Cancel Bypass — denying the Screen Cast prompt only allows retrying Screen Cast or exiting to Home.\n• Optimization: Screen Cast turns OFF automatically ~1.8s after exiting the movie or video player.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.2/SaveGaze-arm64-v8a.apk",
-  "apkSize": 67897728
-}
