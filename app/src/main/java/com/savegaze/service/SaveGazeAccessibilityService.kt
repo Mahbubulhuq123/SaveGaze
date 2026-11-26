@@ -375,6 +375,11 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
                 }
             }
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
+                if (now - lastGuardCheckMs >= 200L) {
+                    checkContentGuardWindow(pkg, forceCheck = true)
+                }
+            }
         }
     }
 
@@ -391,8 +396,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
         try {
             val urls = mutableListOf<String>()
+            val searchTexts = mutableListOf<String>()
             val texts = StringBuilder()
-            collectNodeInfo(root, urls, texts, depth = 0)
+            collectNodeInfo(root, urls, searchTexts, texts, depth = 0, visited = intArrayOf(0))
             val allText = texts.toString()
 
             // A. Tamper / Settings Shield
@@ -413,8 +419,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // C. Browser URL Bar & Visible Text Keyword/Domain Blocker
-            if (cgWebsiteEnabled || cgKeywordEnabled) {
+            // C. Browser URL Bar, Search Input (e.g. Facebook/Social/Search), & Visible Text Blocker
+            val skipTextGuard = pkg in ContentGuardLists.SETTINGS_PACKAGES ||
+                pkg in ContentGuardLists.SKIP_TEXT_GUARD_PACKAGES ||
+                pkg.contains("launcher", ignoreCase = true) ||
+                pkg.contains("inputmethod", ignoreCase = true) ||
+                pkg.contains("keyboard", ignoreCase = true) ||
+                pkg.contains("gboard", ignoreCase = true)
+            if ((cgWebsiteEnabled || cgKeywordEnabled) && !skipTextGuard) {
                 val activeDomains = if (cgWebsiteEnabled) cgActiveDomains else emptySet()
                 for (u in urls) {
                     val res = ContentGuardRules.checkUrl(
@@ -429,11 +441,26 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                if (pkg in ContentGuardLists.BROWSER_PACKAGES && cgKeywordEnabled && allText.isNotEmpty()) {
+                for (queryText in searchTexts) {
+                    val res = ContentGuardRules.checkSearchOrInputText(
+                        rawInput = queryText,
+                        blockedDomains = activeDomains,
+                        customKeywords = cgCustomKeywords,
+                        keywordBlockerEnabled = cgKeywordEnabled
+                    )
+                    if (res.blocked) {
+                        triggerGuardBlock(res.reason, res.matchedItem, goHome = false)
+                        return
+                    }
+                }
+
+                if (cgKeywordEnabled && allText.isNotEmpty()) {
+                    val threshold = if (pkg in ContentGuardLists.BROWSER_PACKAGES) 3 else 2
                     val textRes = ContentGuardRules.checkVisibleScreenText(
                         screenText = allText,
                         customKeywords = cgCustomKeywords,
-                        blockedDomains = activeDomains
+                        blockedDomains = activeDomains,
+                        threshold = threshold
                     )
                     if (textRes.blocked) {
                         triggerGuardBlock(textRes.reason, textRes.matchedItem, goHome = false)
@@ -450,13 +477,17 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private fun collectNodeInfo(
         node: AccessibilityNodeInfo?,
         urls: MutableList<String>,
+        searchTexts: MutableList<String>,
         texts: StringBuilder,
-        depth: Int
+        depth: Int,
+        visited: IntArray
     ) {
-        if (node == null || depth > 14 || texts.length > 20_000) return
+        if (node == null || depth > 22 || visited[0] >= 400 || texts.length > 20_000) return
+        visited[0]++
         val text = node.text?.toString()
         val desc = node.contentDescription?.toString()
         val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        val isSearchOrInput = node.isEditable || ContentGuardLists.SEARCH_BAR_ID_HINTS.any { viewId.contains(it) }
 
         if (!text.isNullOrBlank()) {
             val looksLikeUrlBar = ContentGuardLists.URL_BAR_ID_HINTS.any { viewId.contains(it) } ||
@@ -464,18 +495,24 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 (text.contains('.') && !text.contains(' ') && text.length in 4..180)
             if (looksLikeUrlBar) {
                 urls.add(text)
+            } else if (isSearchOrInput && text.length in 2..200) {
+                searchTexts.add(text)
             }
             if (texts.isNotEmpty()) texts.append(' ')
             texts.append(text)
-        } else if (!desc.isNullOrBlank()) {
+        }
+        if (!desc.isNullOrBlank() && desc != text) {
+            if (isSearchOrInput && desc.length in 2..200) {
+                searchTexts.add(desc)
+            }
             if (texts.isNotEmpty()) texts.append(' ')
             texts.append(desc)
         }
 
-        val count = minOf(node.childCount, 40)
+        val count = minOf(node.childCount, 50)
         for (i in 0 until count) {
             val child = node.getChild(i) ?: continue
-            collectNodeInfo(child, urls, texts, depth + 1)
+            collectNodeInfo(child, urls, searchTexts, texts, depth + 1, visited)
             @Suppress("DEPRECATION")
             try { child.recycle() } catch (_: Exception) {}
         }

@@ -138,4 +138,38 @@ class HybridGenderFilterTest {
         assertEquals(81f, decoded[0].box.width, 1.5f)
         assertEquals(82f, decoded[0].box.height, 1.5f)
     }
+
+    @Test
+    fun multiImageGridAndMultiPersonSemiNudeAreAllBlurredInFemaleOnlyMode() {
+        // 2x2 grid: top-left male avatar, top-right headless female bikini, bottom-left & bottom-right women
+        val maleAvatar = PersonGenderBox(PersonGender.MALE, 0.72f, BoundingBox(20f, 50f, 480f, 550f), 0.12f)
+        val maleFace = Detection(NudeLabel.FACE_MALE, 0.85f, BoundingBox(170f, 80f, 300f, 210f))
+
+        // Top-right cropped semi-nude woman (no face, lower-conf grid detection)
+        val topRightCleavage = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.33f, BoundingBox(600f, 180f, 760f, 290f))
+        val topRightBelly = Detection(NudeLabel.BELLY_EXPOSED, 0.42f, BoundingBox(610f, 295f, 750f, 410f))
+
+        // Bottom-left woman where Porda marginally tilted male (0.28 vs 0.24) despite FEMALE_BREAST_EXPOSED
+        val botLeftMislabel = PersonGenderBox(PersonGender.MALE, 0.28f, BoundingBox(30f, 700f, 470f, 1300f), 0.24f)
+        val botLeftBreast = Detection(NudeLabel.FEMALE_BREAST_EXPOSED, 0.45f, BoundingBox(150f, 850f, 320f, 970f))
+
+        // Bottom-right semi-nude woman cleanly detected
+        val botRightWoman = PersonGenderBox(PersonGender.FEMALE, 0.78f, BoundingBox(560f, 700f, 1020f, 1300f), 0.10f)
+        val botRightFace = Detection(NudeLabel.FACE_FEMALE, 0.80f, BoundingBox(710f, 730f, 840f, 850f))
+        val botRightCleavage = Detection(NudeLabel.FEMALE_BREAST_COVERED, 0.55f, BoundingBox(680f, 900f, 880f, 1040f))
+
+        val filtered = NudeNetDetector.filterDetectionsPure(
+            detections = listOf(maleFace, topRightCleavage, topRightBelly, botLeftBreast, botRightFace, botRightCleavage),
+            personDetections = listOf(maleAvatar, botLeftMislabel, botRightWoman),
+            genderFilter = GenderFilter.FEMALE_ONLY,
+            blurFaces = true
+        )
+
+        assertTrue(filtered.hasNsfwContent)
+        // All 3 female thumbnails/subjects must produce separate blur coverage, while male avatar stays clear
+        assertTrue("Top-right cropped semi-nude must be blurred", filtered.mergedBlurBoxes.any { it.centerX > 520f && it.centerY < 600f })
+        assertTrue("Bottom-left misclassified semi-nude woman must be blurred", filtered.mergedBlurBoxes.any { it.centerX < 480f && it.centerY > 650f })
+        assertTrue("Bottom-right woman must be blurred", filtered.mergedBlurBoxes.any { it.centerX > 520f && it.centerY > 650f })
+        assertFalse("Top-left male avatar must NOT be blurred", filtered.mergedBlurBoxes.any { it.centerX < 480f && it.centerY < 600f })
+    }
 }

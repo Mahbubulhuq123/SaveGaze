@@ -145,6 +145,18 @@ object ContentGuardLists {
         "search_box_text", "omnibox", "address_bar", "addressbar", "url_edit"
     )
 
+    val SEARCH_BAR_ID_HINTS: List<String> = listOf(
+        "search", "query", "omnibox", "url_bar", "location_bar", "address_bar", "search_src_text"
+    )
+
+    val SKIP_TEXT_GUARD_PACKAGES: Set<String> = setOf(
+        "com.android.launcher", "com.android.launcher3", "com.sec.android.app.launcher",
+        "com.huawei.android.launcher", "com.miui.home", "com.oppo.launcher",
+        "com.android.dialer", "com.samsung.android.dialer", "com.google.android.dialer",
+        "com.android.contacts", "com.samsung.android.app.contacts",
+        "com.google.android.inputmethod.latin", "com.samsung.android.honeyboard"
+    )
+
     val SETTINGS_PACKAGES: Set<String> = setOf(
         "com.android.settings",
         "com.miui.securitycenter",

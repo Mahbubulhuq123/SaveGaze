@@ -45,6 +45,13 @@ class ContentGuardRulesTest {
             blockedDomains = domains
         )
         assertTrue(customScreen.blocked)
+
+        val fbSearchHit = ContentGuardRules.checkSearchOrInputText(
+            rawInput = "porn",
+            blockedDomains = domains,
+            customKeywords = emptySet()
+        )
+        assertTrue(fbSearchHit.blocked)
     }
 
     @Test

@@ -179,10 +179,15 @@ class GenderPersonDetector(
             // 1. Global letterboxed pass
             all.addAll(runInference(bitmap, 0f, fullW, fullH))
 
-            // 2. Portrait mobile strips to avoid aspect squishing on reels/thumbnails
+            // 2. Portrait mobile strips sized close to 544:320 aspect so multi-image grids stay sharp
             if (aspectRatio > 1.35f && fullH > 600f) {
-                val stripH = (fullH * 0.44f).toInt().coerceAtLeast(1)
-                val offsets = intArrayOf(0, (fullH * 0.28f).toInt(), (fullH * 0.56f).toInt())
+                val stripH = (fullH * 0.36f).toInt().coerceAtLeast(1)
+                val offsets = intArrayOf(
+                    0,
+                    (fullH * 0.22f).toInt(),
+                    (fullH * 0.44f).toInt(),
+                    (fullH * 0.64f).toInt()
+                )
                 for (yOff in offsets) {
                     val safeH = minOf(stripH, bitmap.height - yOff)
                     if (safeH <= 32) continue

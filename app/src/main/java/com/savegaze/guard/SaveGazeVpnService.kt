@@ -52,7 +52,10 @@ class SaveGazeVpnService : VpnService() {
         private const val VPN_DNS = "10.10.10.1"
         private const val DNS_CACHE_TTL_MS = 45_000L
         private const val MAX_CACHE_ENTRIES = 512
-        private val FALLBACK_UPSTREAMS = listOf("1.1.1.1", "8.8.8.8", "9.9.9.9")
+        private val FALLBACK_UPSTREAMS = listOf(
+            "1.1.1.1", "8.8.8.8", "9.9.9.9",
+            "2606:4700:4700::1111", "2001:4860:4860::8888"
+        )
         private val DOH_ENDPOINTS = listOf(
             "https://1.1.1.1/dns-query",
             "https://8.8.8.8/dns-query"
@@ -134,13 +137,15 @@ class SaveGazeVpnService : VpnService() {
             val bestNet = candidates.maxByOrNull { it.second }?.first
             underlyingPhysicalNetwork = bestNet
 
-            val linkDns = bestNet?.let { net ->
+            val rawDns = bestNet?.let { net ->
                 connectivityManager.getLinkProperties(net)?.dnsServers
-                    ?.filterIsInstance<Inet4Address>()
                     ?.filter { addr ->
-                        !addr.isLoopbackAddress && !addr.isAnyLocalAddress && addr.hostAddress != VPN_DNS && addr.hostAddress != VPN_ADDR
+                        !addr.isLoopbackAddress && !addr.isAnyLocalAddress &&
+                            addr.hostAddress != VPN_DNS && addr.hostAddress != VPN_ADDR
                     }
             } ?: emptyList()
+            // Prioritize IPv4 ISP DNS, keep IPv6 DNS for IPv6-only 5G/LTE networks
+            val linkDns = rawDns.filterIsInstance<Inet4Address>() + rawDns.filter { it !is Inet4Address }
             physicalDnsServers = linkDns
 
             if (_isRunning.value && tunInterface != null) {
@@ -204,8 +209,9 @@ class SaveGazeVpnService : VpnService() {
 
         val builder = Builder()
             .setSession("SaveGaze DNS Shield")
+            .setBlocking(true)
             .setMtu(1500)
-            .addAddress(VPN_ADDR, 32)
+            .addAddress(VPN_ADDR, 24)
             .addDnsServer(VPN_DNS)
             .addRoute(VPN_DNS, 32)
 
@@ -287,8 +293,7 @@ class SaveGazeVpnService : VpnService() {
     private fun writeTunReply(output: FileOutputStream, ipReply: ByteArray) {
         synchronized(tunOutLock) {
             try {
-                output.write(ipReply)
-                output.flush()
+                output.write(ipReply, 0, ipReply.size)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed writing DNS reply to TUN: ${e.message}")
             }
@@ -376,7 +381,7 @@ class SaveGazeVpnService : VpnService() {
                     try { it.bindSocket(socket) } catch (_: Exception) {}
                 }
                 protect(socket)
-                socket.soTimeout = 1300
+                socket.soTimeout = 900
                 socket.send(DatagramPacket(query, query.size, addr, 53))
                 val respBuf = ByteArray(4096)
                 val respPkt = DatagramPacket(respBuf, respBuf.size)

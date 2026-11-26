@@ -86,8 +86,15 @@ object ContentGuardRules {
     }
 
     /**
-     * Checks a URL string for blocked domains or any single blocked keyword (default or custom).
+     * Checks a URL string or typed search bar query for blocked domains or any single blocked keyword (default or custom).
      */
+    fun checkSearchOrInputText(
+        rawInput: String,
+        blockedDomains: Set<String>,
+        customKeywords: Set<String>,
+        keywordBlockerEnabled: Boolean = true
+    ): BlockDecision = checkUrl(rawInput, blockedDomains, customKeywords, keywordBlockerEnabled)
+
     fun checkUrl(
         rawUrl: String,
         blockedDomains: Set<String>,

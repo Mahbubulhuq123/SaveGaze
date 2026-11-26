@@ -434,7 +434,7 @@ fun Bitmap.findMediaContainerBottom(minBottomY: Float, anchorBox: BoundingBox): 
     if (sampleRight <= sampleLeft) return bHeight.toFloat()
     val step = maxOf(1, (sampleRight - sampleLeft) / 8)
 
-    for (y in checkYStart until bHeight - 4 step 6) {
+    for (y in checkYStart until bHeight - 4 step 3) {
         var uiBgCount = 0
         var total = 0
         var x = sampleLeft
