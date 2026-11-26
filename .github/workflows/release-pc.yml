@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          $ver = if ($tag -match '^pc-v(.+)$') { $matches[1] } else { "1.0.0" }
+          $ver = if ($tag -match '^pc-v(\d+\.\d+\.\d+.*)$') { $matches[1] } else { "1.0.0" }
           ./scripts/build-release.ps1 -Version $ver
 
       - name: Upload Build Artifacts
