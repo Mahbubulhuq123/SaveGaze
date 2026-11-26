@@ -42,6 +42,13 @@
             android:launchMode="singleTop"
             android:theme="@style/Theme.SaveGaze" />
 
+        <activity
+            android:name=".service.ProjectionPromptActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.SaveGaze" />
+
         <service
             android:name=".service.SaveGazeAccessibilityService"
             android:exported="true"

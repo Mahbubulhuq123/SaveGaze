@@ -182,6 +182,7 @@ fun HomeScreen(
     val blurOpacity by preferencesManager.blurOpacityFlow.collectAsState(initial = 100)
     val intimateGuardEnabled by preferencesManager.intimateGuardEnabledFlow.collectAsState(initial = true)
     val intimateAudioEnabled by preferencesManager.intimateAudioEnabledFlow.collectAsState(initial = false)
+    val autoMovieCastEnabled by preferencesManager.autoMovieAudioCastEnabledFlow.collectAsState(initial = true)
 
     // Re-check on every resume so returning from system Accessibility settings updates the card.
     DisposableEffect(lifecycleOwner, context) {
@@ -636,9 +637,13 @@ fun HomeScreen(
 
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && intimateGuardEnabled) {
                         Spacer(modifier = Modifier.height(10.dp))
-                        if (!intimateAudioEnabled) {
+                        if (!intimateAudioEnabled && !hasMediaProjection) {
                             Text(
-                                text = "Screen Cast OFF • Visual & Caption Guard Active (Low Battery)",
+                                text = if (autoMovieCastEnabled) {
+                                    "Screen Cast OFF (Idle) • Auto-starts on Movies / Long Videos"
+                                } else {
+                                    "Screen Cast OFF • Visual & Caption Guard Active (Low Battery)"
+                                },
                                 style = MaterialTheme.typography.labelMedium,
                                 color = Color(0xFF2E7D32),
                                 textAlign = TextAlign.Center

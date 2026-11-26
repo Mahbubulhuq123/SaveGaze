@@ -172,4 +172,63 @@ class IntimateGuardRulesTest {
             IntimateExitRules.chooseAction(chromeArticle, IntimateActionMode.SMART_CONTEXT, 0)
         )
     }
+
+    @Test
+    fun autoCastRulesTargetMoviesPlayersAndExcludeSocialAndArticles() {
+        assertTrue(IntimateExitRules.shouldAutoCastAudio("com.stremio.one", emptySet(), false, false, false))
+        assertTrue(IntimateExitRules.shouldAutoCastAudio("com.nuvio.streaming", emptySet(), false, false, false))
+        assertTrue(IntimateExitRules.shouldAutoCastAudio("org.videolan.vlc", emptySet(), false, false, false))
+        assertTrue(IntimateExitRules.shouldAutoCastAudio("com.mxtech.videoplayer.ad", emptySet(), false, false, false))
+
+        assertTrue(
+            IntimateExitRules.shouldAutoCastAudio(
+                "com.google.android.youtube",
+                setOf("com.google.android.youtube:id/watch_player"),
+                hasSeekBarOrPlayerControls = true,
+                isLandscape = false,
+                isMediaPlaying = true
+            )
+        )
+        assertFalse(
+            IntimateExitRules.shouldAutoCastAudio(
+                "com.google.android.youtube",
+                setOf("com.google.android.youtube:id/reel_recycler"),
+                hasSeekBarOrPlayerControls = false,
+                isLandscape = false,
+                isMediaPlaying = true
+            )
+        )
+        assertFalse(
+            IntimateExitRules.shouldAutoCastAudio(
+                "com.google.android.youtube",
+                setOf("com.google.android.youtube:id/results"),
+                hasSeekBarOrPlayerControls = false,
+                isLandscape = false,
+                isMediaPlaying = false
+            )
+        )
+
+        assertFalse(
+            IntimateExitRules.shouldAutoCastAudio(
+                "com.android.chrome",
+                emptySet(),
+                hasSeekBarOrPlayerControls = false,
+                isLandscape = false,
+                isMediaPlaying = false
+            )
+        )
+        assertTrue(
+            IntimateExitRules.shouldAutoCastAudio(
+                "com.android.chrome",
+                emptySet(),
+                hasSeekBarOrPlayerControls = true,
+                isLandscape = true,
+                isMediaPlaying = true
+            )
+        )
+
+        assertFalse(IntimateExitRules.shouldAutoCastAudio("com.instagram.android", setOf("clips_viewer"), true, true, true))
+        assertFalse(IntimateExitRules.shouldAutoCastAudio("com.facebook.katana", setOf("fb_shorts"), true, true, true))
+        assertFalse(IntimateExitRules.shouldAutoCastAudio("com.zhiliaoapp.musically", emptySet(), true, true, true))
+    }
 }

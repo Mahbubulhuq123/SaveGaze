@@ -148,6 +148,7 @@ fun SettingsScreen(
     val blurFaces by preferencesManager.blurFacesFlow.collectAsState(initial = false)
     val intimateGuardEnabled by preferencesManager.intimateGuardEnabledFlow.collectAsState(initial = true)
     val intimateAudioEnabled by preferencesManager.intimateAudioEnabledFlow.collectAsState(initial = false)
+    val autoMovieCastEnabled by preferencesManager.autoMovieAudioCastEnabledFlow.collectAsState(initial = true)
     val intimateActionMode by preferencesManager.intimateActionModeFlow.collectAsState(initial = IntimateActionMode.SMART_CONTEXT)
     val drmAppPolicy by preferencesManager.drmAppPolicyFlow.collectAsState(initial = DrmAppPolicy.WARN_ONLY)
     val tamperEnabled by preferencesManager.tamperGuardEnabledFlow.collectAsState(initial = false)
@@ -379,6 +380,44 @@ fun SettingsScreen(
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Switch(checked = intimateGuardEnabled, onCheckedChange = null)
+                }
+
+                Divider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(
+                            value = autoMovieCastEnabled,
+                            onValueChange = { wantOn ->
+                                if (!wantOn) {
+                                    pendingChallengeTitle = "Disable Auto Movie/Video Cast"
+                                    pendingChallengeAction = {
+                                        coroutineScope.launch { preferencesManager.setAutoMovieAudioCastEnabled(false) }
+                                    }
+                                } else {
+                                    coroutineScope.launch { preferencesManager.setAutoMovieAudioCastEnabled(true) }
+                                }
+                            },
+                            role = Role.Switch
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Auto Screen Cast on Movies & Long Videos",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Prompts on Stremio, Nuvio, VLC, MX Player, YouTube long videos & Chrome video players (excludes Social Media). Stops Screen Cast automatically on exit.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Switch(checked = autoMovieCastEnabled, onCheckedChange = null)
                 }
 
                 Divider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)

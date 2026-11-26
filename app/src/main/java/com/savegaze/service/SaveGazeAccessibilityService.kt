@@ -26,6 +26,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.os.PowerManager
 import android.util.DisplayMetrics
 import android.util.Log
@@ -124,6 +125,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
         }
 
+        fun onMovieCastPromptResolved(granted: Boolean) {
+            val svc = instance ?: return
+            svc.projectionPromptOpen = false
+            if (!granted) {
+                svc.lastCastExitMs = System.currentTimeMillis()
+            }
+        }
+
         fun refreshAudioCapture() {
             instance?.serviceScope?.launch(Dispatchers.Main) {
                 if (instance?.mediaProjection == null && mediaProjectionData != null) {
@@ -186,6 +195,10 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     @Volatile private var isProtectionEnabled = true
     @Volatile private var intimateGuardEnabled = true
     @Volatile private var intimateAudioEnabled = false
+    @Volatile private var autoMovieAudioCastEnabled = true
+    @Volatile private var projectionPromptOpen = false
+    @Volatile private var lastCastExitMs = 0L
+    private var stopCastDebounceJob: Job? = null
     @Volatile private var intimateActionMode = IntimateActionMode.SMART_CONTEXT
     @Volatile private var drmAppPolicy = DrmAppPolicy.WARN_ONLY
     @Volatile private var lastTreeHints: Set<String> = emptySet()
@@ -202,6 +215,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private val drmWarnedPackages = mutableSetOf<String>()
     private var powerManager: PowerManager? = null
     private var keyguardManager: KeyguardManager? = null
+    private var cachedAudioManager: AudioManager? = null
 
     private data class TrackedBox(
         var box: BoundingBox,
@@ -216,6 +230,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         isRunning = true
         powerManager = getSystemService(POWER_SERVICE) as? PowerManager
         keyguardManager = getSystemService(KEYGUARD_SERVICE) as? KeyguardManager
+        cachedAudioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
         publishHealth { ProtectionHealth(serviceRunning = true) }
 
         preferencesManager = PreferencesManager(this)
@@ -359,11 +374,23 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         serviceScope.launch {
             pm.intimateAudioEnabledFlow.collect { enabled ->
                 intimateAudioEnabled = enabled
-                if (!enabled) {
+                if (!enabled && !autoMovieAudioCastEnabled) {
                     audioIntimateDetector?.stop()
                     releaseMediaProjectionAudioOnly()
-                } else {
+                } else if (enabled) {
                     startAudioCaptureIfReady()
+                }
+            }
+        }
+        serviceScope.launch {
+            pm.autoMovieAudioCastEnabledFlow.collect { enabled ->
+                autoMovieAudioCastEnabled = enabled
+                if (!enabled && !intimateAudioEnabled) {
+                    stopCastDebounceJob?.cancel()
+                    audioIntimateDetector?.stop()
+                    releaseMediaProjectionAudioOnly()
+                } else if (enabled) {
+                    evaluateAutoMovieCast()
                 }
             }
         }
@@ -403,15 +430,14 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             syncLockoutOverlay()
         }
 
-        if (pkg == "com.android.systemui" || pkg == packageName) {
-            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg != lastForegroundPackage) {
+        if (pkg == "com.android.systemui" || pkg == packageName || pkg.contains("permissioncontroller", ignoreCase = true)) {
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg == packageName && !projectionPromptOpen) {
                 lastForegroundPackage = pkg
-                if (pkg == packageName) {
-                    trackedBoxes.clear()
-                    activeBlurBoxes = emptyList()
-                    lastScreenSignature = null
-                    overlayManager?.clearBlurRegions()
-                }
+                trackedBoxes.clear()
+                activeBlurBoxes = emptyList()
+                lastScreenSignature = null
+                overlayManager?.clearBlurRegions()
+                evaluateAutoMovieCast()
             }
             return
         }
@@ -465,6 +491,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     overlayManager?.clearBlurRegions()
                 }
             }
+            evaluateAutoMovieCast()
             serviceScope.launch {
                 if (preferencesManager?.getIsEnabled() == true) performScan()
             }
@@ -478,6 +505,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 lastScrollTimestamp = now
                 if (now - lastGuardCheckMs >= 450L) {
                     checkContentGuardWindow(pkg, forceCheck = false)
+                    evaluateAutoMovieCast()
                 }
                 serviceScope.launch {
                     if (preferencesManager?.getIsEnabled() == true) performScan()
@@ -486,6 +514,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 if (now - lastGuardCheckMs >= 450L) {
                     checkContentGuardWindow(pkg, forceCheck = false)
+                    evaluateAutoMovieCast()
                 }
                 if (now - lastContentTriggerMs >= 320L) {
                     lastContentTriggerMs = now
@@ -724,11 +753,72 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private fun releaseMediaProjectionAudioOnly() {
         // On Android 11+, screenshots use AccessibilityService.takeScreenshot(); stop MediaProjection cleanly so Screen Cast ends immediately
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            stopCastDebounceJob?.cancel()
+            audioIntimateDetector?.stop()
             mediaProjection?.stop()
             mediaProjection = null
             mediaProjectionData = null
             mediaProjectionResultCode = 0
             showPersistentNotification(paused = !isProtectionEnabled, requireProjectionFgs = false)
+        }
+    }
+
+    private fun evaluateAutoMovieCast() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        if (!isProtectionEnabled || !intimateGuardEnabled || !autoMovieAudioCastEnabled) return
+        if (!isScreenAwakeAndUnlocked()) {
+            if (mediaProjection != null && !intimateAudioEnabled) {
+                releaseMediaProjectionAudioOnly()
+            }
+            return
+        }
+        if (projectionPromptOpen) return
+
+        val pkg = lastForegroundPackage ?: ""
+        val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val isMediaPlaying = cachedAudioManager?.isMusicActive == true
+        val shouldCastNow = IntimateExitRules.shouldAutoCastAudio(
+            packageName = pkg,
+            treeHints = lastTreeHints,
+            hasSeekBarOrPlayerControls = lastHasSeekBarOrPlayer,
+            isLandscape = isLandscape,
+            isMediaPlaying = isMediaPlaying
+        )
+
+        if (shouldCastNow) {
+            stopCastDebounceJob?.cancel()
+            val now = System.currentTimeMillis()
+            if (mediaProjection == null && (now - lastCastExitMs >= 2_500L)) {
+                projectionPromptOpen = true
+                val promptIntent = Intent(this, ProjectionPromptActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    putExtra(ProjectionPromptActivity.EXTRA_TARGET_PACKAGE, pkg)
+                }
+                startActivity(promptIntent)
+            } else if (mediaProjection != null && audioIntimateDetector?.isCapturing() != true) {
+                startAudioCaptureIfReady()
+            }
+        } else if (!intimateAudioEnabled && mediaProjection != null && stopCastDebounceJob?.isActive != true) {
+            stopCastDebounceJob = serviceScope.launch {
+                delay(1_800L)
+                val rePkg = lastForegroundPackage ?: ""
+                val reLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+                val rePlaying = cachedAudioManager?.isMusicActive == true
+                val stillNeeded = IntimateExitRules.shouldAutoCastAudio(
+                    packageName = rePkg,
+                    treeHints = lastTreeHints,
+                    hasSeekBarOrPlayerControls = lastHasSeekBarOrPlayer,
+                    isLandscape = reLandscape,
+                    isMediaPlaying = rePlaying
+                )
+                if (!stillNeeded && !intimateAudioEnabled && !projectionPromptOpen && mediaProjection != null) {
+                    releaseMediaProjectionAudioOnly()
+                    overlayManager?.showBlockBanner(
+                        "Screen Cast Stopped",
+                        "Exited video player — Screen Cast turned off to save battery"
+                    )
+                }
+            }
         }
     }
 
@@ -748,6 +838,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
 
                     val enabled = isProtectionEnabled
+                    evaluateAutoMovieCast()
                     if (enabled && !isIdleOrSystemPackage(lastForegroundPackage)) {
                         performScan()
                     } else {
@@ -832,7 +923,16 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
         if (mediaProjection == null) {
             mediaProjection = try {
-                mpManager.getMediaProjection(mediaProjectionResultCode, data)
+                mpManager.getMediaProjection(mediaProjectionResultCode, data)?.also { mp ->
+                    mp.registerCallback(object : MediaProjection.Callback() {
+                        override fun onStop() {
+                            audioIntimateDetector?.stop()
+                            mediaProjection = null
+                            mediaProjectionData = null
+                            mediaProjectionResultCode = 0
+                        }
+                    }, Handler(Looper.getMainLooper()))
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to get MediaProjection", e)
                 return
@@ -875,7 +975,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
     private fun startAudioCaptureIfReady() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-        if (!intimateGuardEnabled || !intimateAudioEnabled) return
+        if (!intimateGuardEnabled || (!intimateAudioEnabled && !autoMovieAudioCastEnabled)) return
         val hasAudioPerm = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.RECORD_AUDIO
@@ -895,7 +995,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     }
 
     private fun handleAudioResult(result: AudioIntimateResult) {
-        if (!isProtectionEnabled || !intimateGuardEnabled || !intimateAudioEnabled) return
+        if (!isProtectionEnabled || !intimateGuardEnabled || (!intimateAudioEnabled && !autoMovieAudioCastEnabled)) return
         if (intimateActionInProgress.get()) return
         val pkg = lastForegroundPackage ?: return
         if (isIdleOrSystemPackage(pkg)) return
@@ -1091,8 +1191,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 activePkg.contains("launcher", ignoreCase = true)
 
             if (intimateGuardEnabled && !skipIntimateExit && !intimateActionInProgress.get()) {
-                val freshAudioScore = if (now - lastAudioScoredMs < 2_000L && intimateAudioEnabled) lastAudioResult.score else 0f
-                val freshAudioLabel = if (now - lastAudioScoredMs < 2_000L && intimateAudioEnabled) lastAudioResult.topLabel else ""
+                val audioActive = intimateAudioEnabled || (autoMovieAudioCastEnabled && mediaProjection != null)
+                val freshAudioScore = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.score else 0f
+                val freshAudioLabel = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.topLabel else ""
                 val evalSafety = sceneSafety ?: if (!lastScreenIsStatic) null else lastSceneSafety
                 val signals = IntimateSceneRules.evaluate(
                     detections = detections,

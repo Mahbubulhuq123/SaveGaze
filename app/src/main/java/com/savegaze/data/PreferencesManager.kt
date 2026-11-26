@@ -62,6 +62,7 @@ class PreferencesManager(private val context: Context) {
         // Intimate Video & Audio Guard Keys
         val INTIMATE_GUARD_ENABLED = booleanPreferencesKey("intimate_guard_enabled")
         val INTIMATE_AUDIO_ENABLED = booleanPreferencesKey("intimate_audio_enabled")
+        val AUTO_MOVIE_AUDIO_CAST_ENABLED = booleanPreferencesKey("auto_movie_audio_cast_enabled")
         val INTIMATE_ACTION_MODE = stringPreferencesKey("intimate_action_mode")
         val DRM_APP_POLICY = stringPreferencesKey("drm_app_policy")
     }
@@ -187,6 +188,10 @@ class PreferencesManager(private val context: Context) {
         prefs[Keys.INTIMATE_AUDIO_ENABLED] ?: false
     }
 
+    val autoMovieAudioCastEnabledFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.AUTO_MOVIE_AUDIO_CAST_ENABLED] ?: true
+    }
+
     val intimateActionModeFlow: Flow<IntimateActionMode> = context.dataStore.data.map { prefs ->
         val raw = prefs[Keys.INTIMATE_ACTION_MODE] ?: IntimateActionMode.SMART_CONTEXT.name
         try {
@@ -243,6 +248,7 @@ class PreferencesManager(private val context: Context) {
     suspend fun getTotalBlockedCount(): Int = totalBlockedCountFlow.first()
     suspend fun getIntimateGuardEnabled(): Boolean = intimateGuardEnabledFlow.first()
     suspend fun getIntimateAudioEnabled(): Boolean = intimateAudioEnabledFlow.first()
+    suspend fun getAutoMovieAudioCastEnabled(): Boolean = autoMovieAudioCastEnabledFlow.first()
     suspend fun getIntimateActionMode(): IntimateActionMode = intimateActionModeFlow.first()
     suspend fun getDrmAppPolicy(): DrmAppPolicy = drmAppPolicyFlow.first()
 
@@ -337,6 +343,10 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setIntimateAudioEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.INTIMATE_AUDIO_ENABLED] = enabled }
+    }
+
+    suspend fun setAutoMovieAudioCastEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.AUTO_MOVIE_AUDIO_CAST_ENABLED] = enabled }
     }
 
     suspend fun setIntimateActionMode(mode: IntimateActionMode) {

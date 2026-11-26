@@ -82,6 +82,18 @@ object IntimateExitRules {
         "is.xyz.mpv"
     )
 
+    private val SOCIAL_EXCLUDED_AUDIO_CAST = TIKTOK_PACKAGES + INSTAGRAM_PACKAGES + FACEBOOK_PACKAGES + setOf(
+        "com.reddit.frontpage",
+        "com.twitter.android",
+        "com.snapchat.android",
+        "org.telegram.messenger"
+    )
+
+    private val YT_LONG_PLAYER_HINTS = listOf(
+        "watch_player", "watch_while", "player_view", "player_overlays",
+        "player_control", "time_bar", "exo_progress", "fast_forward", "fullscreen_button"
+    )
+
     private val REEL_VIEW_HINTS = listOf(
         "reel", "shorts", "clips_", "fb_shorts", "short_video"
     )
@@ -157,5 +169,48 @@ object IntimateExitRules {
             }
             MediaAppContext.BROWSER_OR_GENERAL -> ExitActionType.PAUSE_AND_BACK
         }
+    }
+
+    /**
+     * Returns true when Screen Cast Audio AI should automatically engage for long-form content:
+     * - Stremio, Nuvio, VLC, MX Player, Kodi, Plex, MPV -> true immediately
+     * - YouTube -> true ONLY on non-Shorts long video watch player (never Home/Search/Shorts)
+     * - Browsers (Chrome, etc.) -> true ONLY when fullscreen/player controls or landscape media playback is active
+     * - Social Media apps (Facebook, Instagram, TikTok, etc.) -> ALWAYS false
+     */
+    fun shouldAutoCastAudio(
+        packageName: String,
+        treeHints: Set<String>,
+        hasSeekBarOrPlayerControls: Boolean,
+        isLandscape: Boolean,
+        isMediaPlaying: Boolean
+    ): Boolean {
+        val pkg = packageName.lowercase()
+        if (pkg.isBlank() || pkg in SOCIAL_EXCLUDED_AUDIO_CAST) return false
+
+        if (pkg in DEDICATED_VIDEO_PLAYERS ||
+            pkg.contains("stremio") ||
+            pkg.contains("nuvio") ||
+            pkg.contains("mxtech.videoplayer")
+        ) {
+            return true
+        }
+
+        val loweredHints = treeHints.map { it.lowercase() }
+
+        if (pkg in YOUTUBE_PACKAGES) {
+            val isShorts = loweredHints.any { h -> REEL_VIEW_HINTS.any { h.contains(it) } }
+            if (isShorts) return false
+            val hasWatchPlayer = loweredHints.any { h -> YT_LONG_PLAYER_HINTS.any { h.contains(it) } }
+            return hasWatchPlayer || hasSeekBarOrPlayerControls || (isLandscape && isMediaPlaying)
+        }
+
+        if (pkg in ContentGuardLists.BROWSER_PACKAGES) {
+            val hasPlayerNode = hasSeekBarOrPlayerControls ||
+                loweredHints.any { h -> PLAYER_VIEW_HINTS.any { h.contains(it) } }
+            return hasPlayerNode || (isLandscape && isMediaPlaying)
+        }
+
+        return false
     }
 }
