@@ -1,8 +1,8 @@
 {
-  "versionCode": 10900,
-  "versionName": "1.9",
-  "publishedAt": "2026-11-26T07:43:00Z",
-  "releaseNotes": "• Improvement: Body blurring now extends upward to cover the neck/throat up to the lower jawline even when Face Blurring is OFF (and on headless chest/upper-body close-ups), while keeping eyes/upper face visible when Face Blurring is OFF.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v1.9/SaveGaze-arm64-v8a.apk",
-  "apkSize": 42296103
+  "versionCode": 20000,
+  "versionName": "2.0",
+  "publishedAt": "2026-11-26T08:31:30Z",
+  "releaseNotes": "• New: Intimate Video & Audio Guard — detects kissing, bed scenes, explicit content & internal playback moaning/groaning/panting audio (via YAMNet + SwiftFormer ONNX, no mic needed).\n• New: Blur First, Then Act — shields the screen immediately before skipping scenes forward (Movies/Series like Stremio/Nuvio/YouTube), swiping to Next Reel (Instagram/Facebook/Shorts/TikTok), or pausing & pressing Back in browsers.\n• New: DRM Streaming Policy (Netflix, Prime Video, Hotstar) — choose Warn Only, Auto-Block, or Off where Android hardware DRM blocks screen & audio capture.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.0/SaveGaze-arm64-v8a.apk",
+  "apkSize": 67879292
 }
