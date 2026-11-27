@@ -18,7 +18,8 @@ data class ProtectionHealth(
     val detectorStatus: DetectorStatus = DetectorStatus.LOADING,
     val overlayActive: Boolean = false,
     val lastFrameAtMillis: Long = 0L,
-    val lastError: String? = null
+    val lastError: String? = null,
+    val activeSkipMatchInfo: String? = null
 ) {
     val isFullyOperational: Boolean
         get() = serviceRunning &&

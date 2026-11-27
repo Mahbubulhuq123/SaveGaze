@@ -86,6 +86,7 @@ import com.savegaze.guard.SaveGazeVpnService
 import com.savegaze.ml.GenderFilter
 import com.savegaze.service.DetectorStatus
 import com.savegaze.service.SaveGazeAccessibilityService
+import com.savegaze.service.SaveGazeMediaListenerService
 import com.savegaze.update.AppUpdateManager
 import com.savegaze.update.UpdateStatus
 import kotlinx.coroutines.delay
@@ -155,6 +156,7 @@ fun HomeScreen(
 
     // Null until the first check completes, so we never flash "OFF" on launch.
     var isServiceEnabled by remember { mutableStateOf<Boolean?>(null) }
+    var isMediaSyncEnabled by remember { mutableStateOf(SaveGazeMediaListenerService.isNotificationAccessEnabled(context)) }
     val masterEnabled by preferencesManager.isEnabledFlow.collectAsState(initial = null)
     val health by SaveGazeAccessibilityService.healthFlow.collectAsState()
     val vpnRunning by SaveGazeVpnService.isRunningFlow.collectAsState()
@@ -183,16 +185,19 @@ fun HomeScreen(
     val intimateGuardEnabled by preferencesManager.intimateGuardEnabledFlow.collectAsState(initial = true)
     val intimateAudioEnabled by preferencesManager.intimateAudioEnabledFlow.collectAsState(initial = false)
     val autoMovieCastEnabled by preferencesManager.autoMovieAudioCastEnabledFlow.collectAsState(initial = true)
+    val communitySkipEnabled by preferencesManager.communitySkipEnabledFlow.collectAsState(initial = true)
 
-    // Re-check on every resume so returning from system Accessibility settings updates the card.
+    // Re-check on every resume so returning from system Accessibility/Notification settings updates cards.
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 isServiceEnabled = isAccessibilityServiceEnabled(context)
+                isMediaSyncEnabled = SaveGazeMediaListenerService.isNotificationAccessEnabled(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         isServiceEnabled = isAccessibilityServiceEnabled(context)
+        isMediaSyncEnabled = SaveGazeMediaListenerService.isNotificationAccessEnabled(context)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
@@ -765,6 +770,34 @@ fun HomeScreen(
                         value = "$recentBlocks / ${ContentGuardRules.CROSS_BLOCK_LIMIT} in 10m",
                         level = if (recentBlocks > 0) HealthLevel.WARN else HealthLevel.NEUTRAL
                     )
+
+                    HealthRow(
+                        label = "Media Sync (Timestamps)",
+                        value = when {
+                            !communitySkipEnabled -> "Off"
+                            !isMediaSyncEnabled -> "Needs Notification Access"
+                            !health.activeSkipMatchInfo.isNullOrBlank() -> health.activeSkipMatchInfo!!
+                            else -> "Ready (CleanStream + Custom)"
+                        },
+                        level = when {
+                            !communitySkipEnabled -> HealthLevel.NEUTRAL
+                            !isMediaSyncEnabled -> HealthLevel.WARN
+                            else -> HealthLevel.OK
+                        }
+                    )
+
+                    if (communitySkipEnabled && !isMediaSyncEnabled) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        androidx.compose.material3.OutlinedButton(
+                            onClick = {
+                                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Grant Media Sync Access (Hybrid Skip)")
+                        }
+                    }
 
                     if (!vpnRunning) {
                         Spacer(modifier = Modifier.height(10.dp))

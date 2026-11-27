@@ -1,5 +1,7 @@
 package com.savegaze.ui.screens
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -25,8 +27,10 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -34,6 +38,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -41,8 +46,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Slider
@@ -52,6 +59,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -69,18 +77,23 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.savegaze.data.BlurStyle
 import com.savegaze.data.PreferencesManager
 import com.savegaze.guard.BlockPChallengeDialog
 import com.savegaze.guard.DeviceAdminHelper
 import com.savegaze.ml.GenderFilter
+import com.savegaze.service.CommunitySkipRules
 import com.savegaze.service.DrmAppPolicy
 import com.savegaze.service.IntimateActionMode
+import com.savegaze.service.SaveGazeMediaListenerService
 import com.savegaze.update.AppUpdateManager
 import com.savegaze.update.UpdateStatus
 import kotlinx.coroutines.launch
@@ -151,11 +164,99 @@ fun SettingsScreen(
     val autoMovieCastEnabled by preferencesManager.autoMovieAudioCastEnabledFlow.collectAsState(initial = true)
     val intimateActionMode by preferencesManager.intimateActionModeFlow.collectAsState(initial = IntimateActionMode.SMART_CONTEXT)
     val drmAppPolicy by preferencesManager.drmAppPolicyFlow.collectAsState(initial = DrmAppPolicy.WARN_ONLY)
+    val communitySkipEnabled by preferencesManager.communitySkipEnabledFlow.collectAsState(initial = true)
+    val customSkipEntries by preferencesManager.customSkipEntriesFlow.collectAsState(initial = emptyList())
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var isMediaSyncEnabled by remember {
+        mutableStateOf(SaveGazeMediaListenerService.isNotificationAccessEnabled(context))
+    }
+    var showAddTimestampDialog by remember { mutableStateOf(false) }
+    var customTitleInput by remember { mutableStateOf("") }
+    var customRangesInput by remember { mutableStateOf("") }
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isMediaSyncEnabled = SaveGazeMediaListenerService.isNotificationAccessEnabled(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val tamperEnabled by preferencesManager.tamperGuardEnabledFlow.collectAsState(initial = false)
     val masterHash by preferencesManager.masterPasswordHashFlow.collectAsState(initial = null)
     var pendingChallengeTitle by remember { mutableStateOf<String?>(null) }
     var pendingChallengeAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var howItWorksExpanded by remember { mutableStateOf(false) }
+
+    if (showAddTimestampDialog) {
+        val parsedSegments = remember(customRangesInput) {
+            CommunitySkipRules.parseCustomTimestampsInput(customRangesInput)
+        }
+        AlertDialog(
+            onDismissRequest = { showAddTimestampDialog = false },
+            title = { Text("Add Custom Skip Timestamps") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = customTitleInput,
+                        onValueChange = { customTitleInput = it },
+                        label = { Text("Movie or Series Title") },
+                        placeholder = { Text("e.g. The Body S01E06 or The Wolverine") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = customRangesInput,
+                        onValueChange = { customRangesInput = it },
+                        label = { Text("Time Ranges or MCF / CleanStream JSON") },
+                        placeholder = { Text("e.g. 35:30-37:10, 42:10-43:00") },
+                        minLines = 3,
+                        maxLines = 5,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = if (parsedSegments.isNotEmpty()) {
+                            "Parsed ${parsedSegments.size} segment(s) ready to skip accurately."
+                        } else {
+                            "Enter start-end ranges (mm:ss-mm:ss or hh:mm:ss-hh:mm:ss) or paste JSON."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (parsedSegments.isNotEmpty()) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val t = customTitleInput.trim()
+                        val segs = parsedSegments
+                        if (t.isNotBlank() && segs.isNotEmpty()) {
+                            coroutineScope.launch {
+                                preferencesManager.saveCustomSkipEntry(t, segs)
+                            }
+                            customTitleInput = ""
+                            customRangesInput = ""
+                            showAddTimestampDialog = false
+                        }
+                    },
+                    enabled = customTitleInput.isNotBlank() && parsedSegments.isNotEmpty()
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddTimestampDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     pendingChallengeTitle?.let { title ->
         BlockPChallengeDialog(
@@ -463,6 +564,134 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.height(10.dp))
                     OutlinedButton(onClick = onRequestAudioPermissions) {
                         Text("Grant Audio + Screen Permission")
+                    }
+                }
+
+                Divider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(
+                            value = communitySkipEnabled,
+                            onValueChange = { wantOn ->
+                                if (!wantOn && !masterHash.isNullOrBlank()) {
+                                    pendingChallengeTitle = "Disable Hybrid Timestamp Skip"
+                                    pendingChallengeAction = {
+                                        coroutineScope.launch { preferencesManager.setCommunitySkipEnabled(false) }
+                                    }
+                                } else {
+                                    coroutineScope.launch { preferencesManager.setCommunitySkipEnabled(wantOn) }
+                                }
+                            },
+                            role = Role.Switch
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Hybrid Timestamp Skip (CleanStream + Custom)",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Pre-emptively jumps past verified CleanStream (377+ movies) & custom timestamps with zero delay; falls back to on-device AI for unlisted titles.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Switch(checked = communitySkipEnabled, onCheckedChange = null)
+                }
+
+                if (communitySkipEnabled) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    if (isMediaSyncEnabled) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Media Sync Active (Exact Player Position & Seek Ready)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = {
+                                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                            }
+                        ) {
+                            Text("Grant Media Sync Access (Required for Exact Timestamps)")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Custom Movie / Episode Timestamps (${customSkipEntries.size})",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (customSkipEntries.isEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "No custom entries yet. Add exact time ranges (e.g. 35:30-37:10) for series or movies not listed in CleanStream.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        customSkipEntries.forEach { entry ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = entry.displayTitle,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    val summary = entry.segments.joinToString(", ") {
+                                        "${CommunitySkipRules.formatMs(it.startMs)}-${CommunitySkipRules.formatMs(it.endMs)}"
+                                    }
+                                    Text(
+                                        text = summary,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        coroutineScope.launch { preferencesManager.removeCustomSkipEntry(entry.key) }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Delete custom timestamp"
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(onClick = { showAddTimestampDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Add Custom Timestamps / MCF")
                     }
                 }
 

@@ -231,6 +231,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private var consecutiveSkipsOnSameVideo = 0
     private var cleanFramesSinceSkip = 0
     private var lastIntimateActionMs = 0L
+    private val communitySkipRepository = CommunitySkipRepository()
+    @Volatile private var communitySkipEnabled = true
+    private var lastCommunityJumpMs = 0L
+    private var lastSkippedSegmentKey = ""
+    private var lastPublishedSkipInfo: String? = null
+    @Volatile private var hasTimestampMatchActive = false
     private val drmWarnedPackages = mutableSetOf<String>()
     private var powerManager: PowerManager? = null
     private var keyguardManager: KeyguardManager? = null
@@ -418,6 +424,17 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         }
         serviceScope.launch { pm.intimateActionModeFlow.collect { intimateActionMode = it } }
         serviceScope.launch { pm.drmAppPolicyFlow.collect { drmAppPolicy = it } }
+        serviceScope.launch {
+            pm.communitySkipEnabledFlow.collect { enabled ->
+                communitySkipEnabled = enabled
+                if (!enabled) publishSkipInfo(null, activeMatch = false)
+            }
+        }
+        serviceScope.launch {
+            pm.customSkipEntriesFlow.collect { entries ->
+                communitySkipRepository.updateCustomEntries(entries)
+            }
+        }
     }
 
     private fun syncLockoutOverlay() {
@@ -878,9 +895,15 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
                     val enabled = isProtectionEnabled
                     evaluateAutoMovieCast()
-                    if (enabled && !isIdleOrSystemPackage(lastForegroundPackage)) {
-                        performScan()
+                    val jumpedByTimestamp = if (enabled && !isIdleOrSystemPackage(lastForegroundPackage)) {
+                        tryHandleCommunityTimestampSkip()
                     } else {
+                        publishSkipInfo(null, activeMatch = false)
+                        false
+                    }
+                    if (!jumpedByTimestamp && enabled && !isIdleOrSystemPackage(lastForegroundPackage)) {
+                        performScan()
+                    } else if (!enabled || isIdleOrSystemPackage(lastForegroundPackage)) {
                         if (activeBlurBoxes.isNotEmpty()) {
                             trackedBoxes.clear()
                             activeBlurBoxes = emptyList()
@@ -894,6 +917,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     val interval = when {
                         !enabled || isIdleOrSystemPackage(lastForegroundPackage) -> 1_100L
                         verifyingPostSkip -> 140L
+                        hasTimestampMatchActive -> minOf(maxOf(baseInterval, 220L), 300L)
                         lastScreenIsStatic -> 950L
                         activeBlurBoxes.isNotEmpty() -> minOf(maxOf(baseInterval, 240L), 300L)
                         else -> minOf(maxOf(baseInterval, 260L), 340L)
@@ -1600,6 +1624,128 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    private fun publishSkipInfo(info: String?, activeMatch: Boolean) {
+        hasTimestampMatchActive = activeMatch
+        if (lastPublishedSkipInfo != info) {
+            lastPublishedSkipInfo = info
+            publishHealth { it.copy(activeSkipMatchInfo = info) }
+        }
+    }
+
+    private fun tryHandleCommunityTimestampSkip(): Boolean {
+        if (!isProtectionEnabled || !intimateGuardEnabled || !communitySkipEnabled) {
+            publishSkipInfo(null, activeMatch = false)
+            return false
+        }
+        val pkg = lastForegroundPackage ?: ""
+        if (pkg.isBlank() || isIdleOrSystemPackage(pkg)) {
+            publishSkipInfo(null, activeMatch = false)
+            return false
+        }
+        val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val mediaCtx = IntimateExitRules.classifyContext(pkg, lastTreeHints, lastHasSeekBarOrPlayer, isLandscape)
+        if (mediaCtx != MediaAppContext.MOVIE_SERIES_PLAYER && pkg !in ContentGuardLists.DRM_PROTECTED_PACKAGES) {
+            publishSkipInfo(null, activeMatch = false)
+            return false
+        }
+
+        val snapshot = SaveGazeMediaListenerService.getActivePlaybackSnapshot(this, pkg)
+        if (snapshot == null || snapshot.title.isBlank()) {
+            publishSkipInfo(null, activeMatch = false)
+            return false
+        }
+
+        val lookup = communitySkipRepository.resolveNonBlocking(snapshot.title, snapshot.subtitle, serviceScope)
+        when (lookup) {
+            is SkipLookupState.Found -> {
+                val info = "${lookup.sourceLabel}: ${lookup.displayTitle} (${lookup.segments.size} skips)"
+                publishSkipInfo(info, activeMatch = true)
+                if (snapshot.positionMs < 0L || intimateActionInProgress.get()) return false
+
+                val match = CommunitySkipRules.findActiveSkipWindow(snapshot.positionMs, lookup.segments) ?: return false
+                val segKey = "${lookup.cacheKey}:${match.segment.startMs}:${match.segment.endMs}"
+                val now = System.currentTimeMillis()
+                val sameSegCooldown = (segKey == lastSkippedSegmentKey) && (now - lastCommunityJumpMs < 8_000L)
+                if (sameSegCooldown || (now - lastCommunityJumpMs < 2_500L) || (now - lastIntimateActionMs < 1_400L)) {
+                    return false
+                }
+                triggerExactTimestampSkip(pkg, lookup, match, segKey)
+                return true
+            }
+            is SkipLookupState.Loading -> {
+                publishSkipInfo("Checking timestamps: ${lookup.normalizedTitle}…", activeMatch = false)
+            }
+            is SkipLookupState.NotFound -> {
+                publishSkipInfo("AI Fallback: ${lookup.normalizedTitle}", activeMatch = false)
+            }
+            SkipLookupState.Idle -> publishSkipInfo(null, activeMatch = false)
+        }
+        return false
+    }
+
+    private fun triggerExactTimestampSkip(
+        pkg: String,
+        lookup: SkipLookupState.Found,
+        match: MatchedSkipWindow,
+        segKey: String
+    ) {
+        if (!intimateActionInProgress.compareAndSet(false, true)) return
+        val startStr = CommunitySkipRules.formatMs(match.segment.startMs)
+        val endStr = CommunitySkipRules.formatMs(match.segment.endMs)
+        val reason = "${lookup.sourceLabel} Skip ($startStr → $endStr)"
+
+        lastSkippedSegmentKey = segKey
+        lastCommunityJumpMs = System.currentTimeMillis()
+
+        val (w, h) = currentDisplaySize()
+        overlayManager?.showIntimateShieldOverlay(reason, "Jumping past ${lookup.displayTitle} scene…")
+        overlayManager?.updateBlurRegions(listOf(BoundingBox(0f, 0f, w.toFloat(), h.toFloat())), emptyList())
+
+        serviceScope.launch(Dispatchers.Main) {
+            try {
+                delay(160L)
+                val sought = SaveGazeMediaListenerService.seekActivePlaybackTo(this@SaveGazeAccessibilityService, pkg, match.targetEndMs)
+                Log.i(TAG, "Hybrid timestamp skip [${lookup.sourceLabel}] ${lookup.displayTitle}: $startStr -> $endStr (seekTo=$sought)")
+                delay(550L)
+
+                val after = SaveGazeMediaListenerService.getActivePlaybackSnapshot(this@SaveGazeAccessibilityService, pkg)
+                val moved = sought && after != null && (
+                    after.positionMs >= match.segment.startMs + 2_000L ||
+                        abs(after.positionMs - match.targetEndMs) <= 4_500L
+                    )
+                if (!moved && pkg !in ContentGuardLists.DRM_PROTECTED_PACKAGES) {
+                    performSkipSceneForward(w, h)
+                    dispatchMediaFastForward()
+                    delay(950L)
+                }
+            } finally {
+                overlayManager?.clearBlurRegions()
+                overlayManager?.hideIntimateShieldOverlay()
+                audioIntimateDetector?.resetWindow()
+                trackedBoxes.clear()
+                activeBlurBoxes = emptyList()
+                lastScreenSignature = null
+                staticClipEvaluated = false
+                clipGeneration.incrementAndGet()
+                lastClipScore = null
+                lastClipScoredMs = 0L
+                lastEvaluatedClipMs = 0L
+                lastClipLaunchMs = 0L
+                lastSceneSafety = null
+                lastAudioScoredMs = 0L
+                consecutiveIntimateHits = 0
+                consecutiveAudioHits = 0
+                cleanFramesSinceSkip = 0
+                try {
+                    delay(200L)
+                } finally {
+                    lastIntimateActionMs = System.currentTimeMillis()
+                    intimateActionInProgress.set(false)
+                }
+            }
         }
     }
 

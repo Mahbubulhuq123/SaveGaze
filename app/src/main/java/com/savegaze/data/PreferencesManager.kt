@@ -13,8 +13,11 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.savegaze.guard.ContentGuardRules
 import com.savegaze.ml.GenderFilter
+import com.savegaze.service.CommunitySkipRules
+import com.savegaze.service.CustomSkipEntry
 import com.savegaze.service.DrmAppPolicy
 import com.savegaze.service.IntimateActionMode
+import com.savegaze.service.SkipSegment
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -65,6 +68,8 @@ class PreferencesManager(private val context: Context) {
         val AUTO_MOVIE_AUDIO_CAST_ENABLED = booleanPreferencesKey("auto_movie_audio_cast_enabled")
         val INTIMATE_ACTION_MODE = stringPreferencesKey("intimate_action_mode")
         val DRM_APP_POLICY = stringPreferencesKey("drm_app_policy")
+        val COMMUNITY_SKIP_ENABLED = booleanPreferencesKey("community_skip_enabled")
+        val CUSTOM_SKIP_TIMESTAMPS_JSON = stringPreferencesKey("custom_skip_timestamps_json")
     }
 
     // ── Flow-based reactive getters ─────────────────────────────────────
@@ -210,6 +215,14 @@ class PreferencesManager(private val context: Context) {
         }
     }
 
+    val communitySkipEnabledFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.COMMUNITY_SKIP_ENABLED] ?: true
+    }
+
+    val customSkipEntriesFlow: Flow<List<CustomSkipEntry>> = context.dataStore.data.map { prefs ->
+        CommunitySkipRules.deserializeCustomStore(prefs[Keys.CUSTOM_SKIP_TIMESTAMPS_JSON])
+    }
+
     val recentBlockCountFlow: Flow<Int> = context.dataStore.data.map { prefs ->
         val now = System.currentTimeMillis()
         parseTimestamps(prefs[Keys.BLOCK_TIMESTAMPS_CSV]).count {
@@ -251,6 +264,8 @@ class PreferencesManager(private val context: Context) {
     suspend fun getAutoMovieAudioCastEnabled(): Boolean = autoMovieAudioCastEnabledFlow.first()
     suspend fun getIntimateActionMode(): IntimateActionMode = intimateActionModeFlow.first()
     suspend fun getDrmAppPolicy(): DrmAppPolicy = drmAppPolicyFlow.first()
+    suspend fun getCommunitySkipEnabled(): Boolean = communitySkipEnabledFlow.first()
+    suspend fun getCustomSkipEntries(): List<CustomSkipEntry> = customSkipEntriesFlow.first()
 
     // ── Suspend setters ─────────────────────────────────────────────────
 
@@ -355,6 +370,36 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setDrmAppPolicy(policy: DrmAppPolicy) {
         context.dataStore.edit { it[Keys.DRM_APP_POLICY] = policy.name }
+    }
+
+    suspend fun setCommunitySkipEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.COMMUNITY_SKIP_ENABLED] = enabled }
+    }
+
+    suspend fun saveCustomSkipEntry(rawTitle: String, segments: List<SkipSegment>) {
+        if (segments.isEmpty()) return
+        val norm = CommunitySkipRules.normalizeTitle(rawTitle)
+        val displayTitle = if (norm.episodeTag != null) "${norm.baseTitle} (${norm.episodeTag})" else norm.baseTitle
+        if (displayTitle.isBlank()) return
+        val key = CommunitySkipRules.normalizeKey(norm.baseTitle, norm.episodeTag)
+        context.dataStore.edit { prefs ->
+            val current = CommunitySkipRules.deserializeCustomStore(prefs[Keys.CUSTOM_SKIP_TIMESTAMPS_JSON])
+                .filterNot { it.key == key }
+            val updated = current + CustomSkipEntry(
+                key = key,
+                displayTitle = displayTitle,
+                segments = CommunitySkipRules.mergeNearbySegments(segments)
+            )
+            prefs[Keys.CUSTOM_SKIP_TIMESTAMPS_JSON] = CommunitySkipRules.serializeCustomStore(updated)
+        }
+    }
+
+    suspend fun removeCustomSkipEntry(key: String) {
+        context.dataStore.edit { prefs ->
+            val current = CommunitySkipRules.deserializeCustomStore(prefs[Keys.CUSTOM_SKIP_TIMESTAMPS_JSON])
+            val updated = current.filterNot { it.key == key }
+            prefs[Keys.CUSTOM_SKIP_TIMESTAMPS_JSON] = CommunitySkipRules.serializeCustomStore(updated)
+        }
     }
 
     suspend fun setMasterPassword(plainPassword: String) {
