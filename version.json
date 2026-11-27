@@ -1,8 +1,8 @@
 {
-  "versionCode": 20600,
-  "versionName": "2.6",
-  "publishedAt": "2026-11-27T05:41:00Z",
-  "releaseNotes": "• Improvement: Continuous +10s Progressive Skip Loop — movie & streaming players (Nuvio, Stremio, CloudStream, VLC, YouTube, fullscreen browser videos) never back-exit after 2 skips in Smart Mode; instead SaveGaze blurs, skips +10s/+15s forward cleanly, resets stale frame caches, re-checks the new frame, and keeps skipping +10s step-by-step until normal content returns.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.6/SaveGaze-arm64-v8a.apk",
-  "apkSize": 110235734
+  "versionCode": 20700,
+  "versionName": "2.7",
+  "publishedAt": "2026-11-27T06:10:00Z",
+  "releaseNotes": "• Fix: Stop Endless Normal-Scene Skipping in Movies — removed generic movie/nudity MobileCLIP prompt tokens that fired 0.856 on black/transition screens (now 0.0003 on black & dark UI), added visual luma/variance guard, required human face/person presence + 2-frame confirmation when faces aren't locked together, and discarded stale in-flight CLIP jobs across +10s skips.\n• Fix: Stop Facebook Feed & Reels False Auto-Scroll — narrowed REEL_VIEW_HINTS so Home Feed \"Reels\" tabs don't trigger REELS_SHORT, stopped auto-scroll/back on social home feeds while keeping real-time blur active, and tightened Reels CLIP corroboration.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.7/SaveGaze-arm64-v8a.apk",
+  "apkSize": 110235410
 }
