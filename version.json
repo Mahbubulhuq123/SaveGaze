@@ -1,8 +1,8 @@
 {
-  "versionCode": 20800,
-  "versionName": "2.8",
-  "publishedAt": "2026-11-27T11:30:00Z",
-  "releaseNotes": "• Fix: Dark Bedroom & Same-Sex Intimacy Detection — replaced heterosexual-only & dimly-lit negative bias with gender-neutral kissing/bed prompts (including same-sex couples), lowered hasVisualContent floor (mean>=6.5, stdDev>=5.0) while solid black/shield stay <0.01, added dark-scene auto-brightness gain, and enabled dark movie bed fallback when face detection misses in low light.\n• Fix: Zero Post-Scene Late Triggers & Faster Kiss Skip — clears stale CLIP cache on scene cuts (1.4s expiry), scans CLIP every 400ms, and makes human-backed movie kisses trigger immediately.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.8/SaveGaze-arm64-v8a.apk",
-  "apkSize": 110235798
+  "versionCode": 20900,
+  "versionName": "2.9",
+  "publishedAt": "2026-11-27T11:59:00Z",
+  "releaseNotes": "• Fix: Stop Dance, Fight & Pre-Scene False Skips — rebuilt CLIP prompts to exclude hugging and explicitly contrast dancing, fighting, and close talking; capped dark brightness gain at 1.85x; and prevented double-counting one cached CLIP score on neededHits=2.\n• Fix: Zero Post-Scene Trailing Loop — clears AudioIntimateDetector ring buffer (resetWindow) after each +10s skip and waits 1.15s shielded + 250ms post-hide settle so ExoPlayer finishes buffering the seeked chunk before re-scanning.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.9/SaveGaze-arm64-v8a.apk",
+  "apkSize": 110238062
 }
