@@ -179,17 +179,17 @@ object IntimateSceneRules {
         val hasHumanCue = faces.isNotEmpty() || personBoxes.isNotEmpty() || hasSemiNude || nsfwProb >= 0.16f
         val closePairClip = kissOrBedCue && clipKissProb >= 0.72f && clipMargin >= 0.022f
         val humanBackedClip = hasHumanCue && clipKissProb >= 0.75f && clipMargin >= 0.025f
-        val darkMovieBedClip = allowDarkClipFallback && clipKissProb >= 0.82f && clipMargin >= 0.032f
+        val darkMovieBedClip = allowDarkClipFallback && clipKissProb >= 0.82f && clipMargin >= 0.027f
         val continueMovieClip = continuingIntimateScene && allowDarkClipFallback &&
-            ((kissOrBedCue && clipKissProb >= 0.64f && clipMargin >= 0.012f) ||
-                (clipKissProb >= 0.72f && clipMargin >= 0.018f))
+            ((kissOrBedCue && clipKissProb >= 0.70f && clipMargin >= 0.020f) ||
+                (clipKissProb >= 0.78f && clipMargin >= 0.025f))
         if (closePairClip || humanBackedClip || darkMovieBedClip || continueMovieClip) {
             val isInstantKiss = if (continueMovieClip) {
                 true
             } else if (allowDarkClipFallback) {
                 (closePairClip && clipKissProb >= 0.74f && clipMargin >= 0.024f) ||
                     (humanBackedClip && clipKissProb >= 0.81f && clipMargin >= 0.030f) ||
-                    (darkMovieBedClip && clipKissProb >= 0.84f && clipMargin >= 0.034f)
+                    (darkMovieBedClip && clipKissProb >= 0.85f && clipMargin >= 0.028f)
             } else {
                 closePairClip && clipKissProb >= 0.80f && clipMargin >= 0.032f
             }
@@ -202,12 +202,19 @@ object IntimateSceneRules {
             )
         }
 
-        // 4. Kissing / bed pose must have real NSFW, semi-nude, or intimate audio support (never SFW talking close-ups)
-        val poseNsfwFloor = if (continuingIntimateScene) 0.24f else 0.34f
-        if (kissOrBedCue && (nsfwProb >= poseNsfwFloor || (nsfwProb >= 0.18f && (hasSemiNude || audioScore >= 0.30f)))) {
+        // 4. Kissing / bed pose must have real NSFW, semi-nude, or intimate audio support;
+        // never let noisy low SwiftFormer scores override a fresh safe CLIP score (prevents post-skip loops)
+        val hasFreshClipScore = hasFreshVisual && (clipKissProb > 0f || clipMargin != 0f)
+        val clipClearlySafe = hasFreshClipScore && (clipKissProb < 0.68f || clipMargin < 0.010f)
+        val poseTriggered = if (clipClearlySafe) {
+            nsfwProb >= 0.65f || (hasSemiNude && nsfwProb >= 0.42f)
+        } else {
+            nsfwProb >= 0.36f || (nsfwProb >= 0.20f && (hasSemiNude || audioScore >= 0.35f))
+        }
+        if (kissOrBedCue && poseTriggered) {
             return IntimateSignals(
                 triggered = true,
-                instant = continuingIntimateScene || nsfwProb >= 0.65f || (hasSemiNude && audioScore >= 0.35f),
+                instant = nsfwProb >= 0.65f || (hasSemiNude && audioScore >= 0.35f),
                 reason = "Intimate Kissing / Bed Scene",
                 confidence = max(nsfwProb, 0.58f),
                 isKissOrBedCue = true

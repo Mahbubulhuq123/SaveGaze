@@ -219,6 +219,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     @Volatile private var lastClipScoredMs = 0L
     private var lastEvaluatedClipMs = 0L
     private var lastClipLaunchMs = 0L
+    @Volatile private var staticClipEvaluated = false
     private val clipInferenceInFlight = AtomicBoolean(false)
     private val clipGeneration = AtomicInteger(0)
     @Volatile private var lastAudioResult = AudioIntimateResult(0f, "", 0f, false)
@@ -1158,6 +1159,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 bitmap.width > bitmap.height
             ) == MediaAppContext.MOVIE_SERIES_PLAYER
             lastScreenIsStatic = screenChange.isStatic
+            if (!screenChange.isStatic || screenChange.isSceneCut) {
+                staticClipEvaluated = false
+            }
 
             if (screenChange.isStatic && !isActiveVideoPlayback && !didScrollRecently && (now - lastFullInferenceMs < 2_500L)) {
                 publishHealth {
@@ -1267,12 +1271,15 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val isSocialFeedBrowse = IntimateExitRules.isSocialFeedApp(activePkg) &&
                     activeContext == MediaAppContext.BROWSER_OR_GENERAL
                 if (clipDetector != null &&
-                    (!screenChange.isStatic || isActiveVideoPlayback) &&
+                    (!screenChange.isStatic || (isActiveVideoPlayback && !staticClipEvaluated)) &&
                     !isSocialFeedBrowse &&
                     (activeContext != MediaAppContext.BROWSER_OR_GENERAL || lastHasSeekBarOrPlayer || isLandscapeFrame) &&
                     now - lastClipLaunchMs >= 400L &&
                     clipInferenceInFlight.compareAndSet(false, true)
                 ) {
+                    if (screenChange.isStatic) {
+                        staticClipEvaluated = true
+                    }
                     lastClipLaunchMs = now
                     val launchGen = clipGeneration.get()
                     val clipFocusBoxes = filtered.faces.map { it.box }.ifEmpty { personBoxes.map { it.box } }
@@ -1348,7 +1355,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
                 } else {
                     consecutiveIntimateHits = (consecutiveIntimateHits - 1).coerceAtLeast(0)
-                    if (consecutiveSkipsOnSameVideo > 0 && (freshClip != null || sceneSafety != null)) {
+                    if (consecutiveSkipsOnSameVideo > 0 && (freshClip != null || (!isActiveVideoPlayback && sceneSafety != null))) {
                         cleanFramesSinceSkip++
                     }
                     if ((cleanFramesSinceSkip >= 2 && (now - lastIntimateActionMs >= 1_800L)) || (now - lastIntimateActionMs >= 6_000L)) {
@@ -1662,6 +1669,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 trackedBoxes.clear()
                 activeBlurBoxes = emptyList()
                 lastScreenSignature = null
+                staticClipEvaluated = false
                 clipGeneration.incrementAndGet()
                 lastClipScore = null
                 lastClipScoredMs = 0L

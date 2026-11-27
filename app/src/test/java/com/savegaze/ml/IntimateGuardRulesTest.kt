@@ -418,6 +418,21 @@ class IntimateGuardRulesTest {
 
     @Test
     fun continuingSkipChainSustainsOverLongIntimateScenesAndStopsOnNormalTransition() {
+        val darkBedStart = IntimateSceneRules.evaluate(
+            detections = emptyList(),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.08f, sfw = 0.92f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.88f,
+            clipMargin = 0.0285f,
+            allowDarkClipFallback = true
+        )
+        assertTrue(darkBedStart.triggered)
+        assertTrue(darkBedStart.instant)
+
         val stillIntimate = IntimateSceneRules.evaluate(
             detections = emptyList(),
             personBoxes = emptyList(),
@@ -426,13 +441,31 @@ class IntimateGuardRulesTest {
             audioLabel = null,
             screenW = 2340f,
             screenH = 1080f,
-            clipKissProb = 0.74f,
-            clipMargin = 0.020f,
+            clipKissProb = 0.79f,
+            clipMargin = 0.026f,
             allowDarkClipFallback = true,
             continuingIntimateScene = true
         )
         assertTrue(stillIntimate.triggered)
         assertTrue(stillIntimate.instant)
+
+        val normalClosePoseWithSafeClipNoLoop = IntimateSceneRules.evaluate(
+            detections = listOf(
+                Detection(NudeLabel.FACE_MALE, 0.85f, BoundingBox(420f, 180f, 660f, 440f)),
+                Detection(NudeLabel.FACE_FEMALE, 0.88f, BoundingBox(650f, 190f, 890f, 450f))
+            ),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.28f, sfw = 0.72f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.65f,
+            clipMargin = 0.001f,
+            allowDarkClipFallback = true,
+            continuingIntimateScene = true
+        )
+        assertFalse(normalClosePoseWithSafeClipNoLoop.triggered)
 
         val normalTransitionedFrame = IntimateSceneRules.evaluate(
             detections = emptyList(),
