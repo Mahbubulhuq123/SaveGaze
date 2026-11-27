@@ -111,8 +111,14 @@ object IntimateExitRules {
     )
 
     private val REEL_VIEW_HINTS = listOf(
-        "reel", "shorts", "clips_", "fb_shorts", "short_video"
+        "clips_viewer", "clips_pager", "reel_recycler", "reel_viewer", "reels_viewer",
+        "fb_shorts", "short_video", "shorts_player", "reels_fragment", "reel_player", "reels_playback"
     )
+
+    fun isSocialFeedApp(packageName: String): Boolean {
+        val pkg = packageName.lowercase()
+        return pkg in SOCIAL_EXCLUDED_AUDIO_CAST
+    }
 
     private val PLAYER_VIEW_HINTS = listOf(
         "player_view", "watch_player", "exo_", "seekbar", "time_bar", "media_controller",

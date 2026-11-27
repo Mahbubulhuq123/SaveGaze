@@ -257,6 +257,11 @@ class IntimateGuardRulesTest {
         val talkScore = MobileClipIntimateRules.score(talkEmb, prompts, positiveCount = 2)
         assertTrue(talkScore.intimateProb < 0.30f)
         assertTrue(talkScore.margin < 0f)
+
+        // Blank/black screens must fail visual content check
+        assertFalse(MobileClipIntimateRules.hasVisualContent(FloatArray(256) { 5f }))
+        assertFalse(MobileClipIntimateRules.hasVisualContent(FloatArray(256) { 128f }))
+        assertTrue(MobileClipIntimateRules.hasVisualContent(FloatArray(256) { i -> if (i % 2 == 0) 30f else 180f }))
     }
 
     @Test
@@ -289,13 +294,14 @@ class IntimateGuardRulesTest {
             screenH = 1080f,
             sensitivity = 0.25f,
             clipKissProb = 0.76f,
-            clipMargin = 0.020f
+            clipMargin = 0.025f
         )
         assertTrue(clipKiss.triggered)
         assertTrue(clipKiss.instant)
         assertTrue(clipKiss.reason.contains("CLIP"))
 
-        val clipKissSingleFrame = IntimateSceneRules.evaluate(
+        // Empty room / dark corridor without faces/persons/NSFW must NEVER false-trigger CLIP alone
+        val darkRoomNoPeople = IntimateSceneRules.evaluate(
             detections = emptyList(),
             personBoxes = emptyList(),
             sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.04f, sfw = 0.96f),
@@ -304,11 +310,45 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.64f,
-            clipMargin = 0.012f
+            clipKissProb = 0.88f,
+            clipMargin = 0.050f
         )
-        assertTrue(clipKissSingleFrame.triggered)
-        assertFalse(clipKissSingleFrame.instant)
+        assertFalse(darkRoomNoPeople.triggered)
+
+        // Single-face tight kiss needs sustained 2-frame confirmation (not instant)
+        val tightKiss = IntimateSceneRules.evaluate(
+            detections = listOf(rightFace),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.04f, sfw = 0.96f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2400f,
+            screenH = 1080f,
+            sensitivity = 0.25f,
+            clipKissProb = 0.80f,
+            clipMargin = 0.040f
+        )
+        assertTrue(tightKiss.triggered)
+        assertFalse(tightKiss.instant)
+    }
+
+    @Test
+    fun facebookFeedWithReelsTabIsNotMisclassifiedAsReelsPlayer() {
+        val fbHomeFeedWithReelsTab = IntimateExitRules.classifyContext(
+            packageName = "com.facebook.katana",
+            treeHints = setOf("com.facebook.katana:id/feed_story_container", "reels"),
+            hasSeekBarOrPlayerControls = false,
+            isLandscape = false
+        )
+        assertEquals(MediaAppContext.BROWSER_OR_GENERAL, fbHomeFeedWithReelsTab)
+
+        val fbActualReelsViewer = IntimateExitRules.classifyContext(
+            packageName = "com.facebook.katana",
+            treeHints = setOf("com.facebook.katana:id/fb_shorts_video_container"),
+            hasSeekBarOrPlayerControls = false,
+            isLandscape = false
+        )
+        assertEquals(MediaAppContext.REELS_SHORT, fbActualReelsViewer)
     }
 
     @Test

@@ -29,11 +29,26 @@ data class ClipIntimateScore(
  */
 object MobileClipIntimateRules {
 
+    fun hasVisualContent(lumas: FloatArray): Boolean {
+        if (lumas.isEmpty()) return false
+        var sum = 0.0
+        for (l in lumas) sum += l
+        val mean = sum / lumas.size
+        if (mean < 18.0) return false
+        var varSum = 0.0
+        for (l in lumas) {
+            val d = l - mean
+            varSum += d * d
+        }
+        val stdDev = sqrt(varSum / lumas.size)
+        return stdDev >= 12.0
+    }
+
     fun score(
         imageEmbedding: FloatArray,
         promptEmbeddings: Array<FloatArray>,
         positiveCount: Int,
-        logitScale: Float = 85f
+        logitScale: Float = 55f
     ): ClipIntimateScore {
         if (promptEmbeddings.isEmpty() || positiveCount <= 0 || positiveCount >= promptEmbeddings.size) {
             return ClipIntimateScore(0f, 0f, 0f, 0f)
@@ -132,6 +147,10 @@ class MobileClipIntimateDetector(context: Context) {
             } else {
                 Bitmap.createBitmap(bitmap, cropX, cropY, cropSize, cropSize)
             }
+            if (!hasBitmapVisualContent(centerSquare)) {
+                if (centerSquare !== bitmap) centerSquare.recycle()
+                return@withContext ClipIntimateScore(0f, -0.2f, 0f, 0.2f)
+            }
             val buffer = centerSquare.toFloatBuffer(INPUT_SIZE, INPUT_SIZE)
             if (centerSquare !== bitmap) {
                 centerSquare.recycle()
@@ -156,6 +175,26 @@ class MobileClipIntimateDetector(context: Context) {
             Log.w(TAG, "MobileCLIP inference error", e)
             null
         }
+    }
+
+    private fun hasBitmapVisualContent(bmp: Bitmap): Boolean {
+        val w = bmp.width
+        val h = bmp.height
+        if (w < 8 || h < 8) return false
+        val lumas = FloatArray(256)
+        var idx = 0
+        for (r in 0 until 16) {
+            val y = (r * h / 16).coerceIn(0, h - 1)
+            for (c in 0 until 16) {
+                val x = (c * w / 16).coerceIn(0, w - 1)
+                val px = bmp.getPixel(x, y)
+                val red = (px shr 16) and 0xFF
+                val green = (px shr 8) and 0xFF
+                val blue = px and 0xFF
+                lumas[idx++] = 0.299f * red + 0.587f * green + 0.114f * blue
+            }
+        }
+        return MobileClipIntimateRules.hasVisualContent(lumas)
     }
 
     fun close() {

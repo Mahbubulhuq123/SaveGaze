@@ -153,12 +153,15 @@ object IntimateSceneRules {
         }
 
         // 3. MobileCLIP2-S0 clothed kissing / bed / romantic embrace detector (catches PG-13 movie kissing)
-        if ((clipKissProb >= 0.60f && clipMargin >= 0.010f) ||
-            (kissOrBedCue && clipKissProb >= 0.48f && clipMargin >= 0.004f)
+        // Require human presence (face/person/semi-nude/soft NSFW) so dark rooms, fights, and text feeds never false-trigger
+        val hasHumanCue = faces.isNotEmpty() || personBoxes.isNotEmpty() || hasSemiNude || nsfwProb >= 0.18f
+        if ((kissOrBedCue && clipKissProb >= 0.65f && clipMargin >= 0.020f) ||
+            (hasHumanCue && clipKissProb >= 0.78f && clipMargin >= 0.036f)
         ) {
+            val isInstantKiss = kissOrBedCue && clipKissProb >= 0.65f && clipMargin >= 0.020f
             return IntimateSignals(
                 triggered = true,
-                instant = clipKissProb >= 0.74f && clipMargin >= 0.018f,
+                instant = isInstantKiss,
                 reason = "Intimate Scene / Kissing (CLIP)",
                 confidence = clipKissProb,
                 isKissOrBedCue = true

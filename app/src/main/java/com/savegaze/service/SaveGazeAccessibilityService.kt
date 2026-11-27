@@ -76,6 +76,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -218,6 +219,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     @Volatile private var lastClipScoredMs = 0L
     private var lastClipLaunchMs = 0L
     private val clipInferenceInFlight = AtomicBoolean(false)
+    private val clipGeneration = AtomicInteger(0)
     @Volatile private var lastAudioResult = AudioIntimateResult(0f, "", 0f, false)
     @Volatile private var lastAudioScoredMs = 0L
     private var lastFullInferenceMs = 0L
@@ -693,7 +695,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         }
         if (!desc.isNullOrBlank()) {
             val ld = desc.lowercase()
-            if (ld.contains("reel") || ld.contains("shorts")) treeHints.add(ld.take(40))
+            if (ld.contains("comment on reel") || ld.contains("like reel") ||
+                ld.contains("share reel") || ld.contains("shorts player") ||
+                ld.contains("fb_shorts")
+            ) {
+                treeHints.add(ld.take(40))
+            }
             if (ld.contains("fast forward") || ld.contains("skip forward")) hasPlayerFlag[0] = true
         }
         val isSearchOrInput = node.isEditable || ContentGuardLists.SEARCH_BAR_ID_HINTS.any { viewId.contains(it) }
@@ -1224,19 +1231,23 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val activeContext = IntimateExitRules.classifyContext(
                     activePkg, lastTreeHints, lastHasSeekBarOrPlayer, isLandscapeFrame
                 )
+                val isSocialFeedBrowse = IntimateExitRules.isSocialFeedApp(activePkg) &&
+                    activeContext == MediaAppContext.BROWSER_OR_GENERAL
                 if (clipDetector != null &&
                     !screenChange.isStatic &&
+                    !isSocialFeedBrowse &&
                     (activeContext != MediaAppContext.BROWSER_OR_GENERAL || lastHasSeekBarOrPlayer || isLandscapeFrame) &&
                     now - lastClipLaunchMs >= 600L &&
                     clipInferenceInFlight.compareAndSet(false, true)
                 ) {
                     lastClipLaunchMs = now
+                    val launchGen = clipGeneration.get()
                     val clipCrop = createCenterSquareClipCrop(bitmap, filtered.faces.map { it.box })
                     if (clipCrop != null) {
                         serviceScope.launch(Dispatchers.Default) {
                             try {
                                 val score = clipDetector.classify(clipCrop)
-                                if (score != null) {
+                                if (score != null && clipGeneration.get() == launchGen) {
                                     lastClipScore = score
                                     lastClipScoredMs = System.currentTimeMillis()
                                     if (score.intimateProb >= 0.45f) {
@@ -1257,8 +1268,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val freshAudioScore = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.score else 0f
                 val freshAudioLabel = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.topLabel else ""
                 val evalSafety = sceneSafety ?: if (!lastScreenIsStatic) null else lastSceneSafety
-                val freshClip = lastClipScore?.takeIf { now - lastClipScoredMs < 2_600L }
-                val signals = IntimateSceneRules.evaluate(
+                val freshClip = if (!isSocialFeedBrowse) lastClipScore?.takeIf { now - lastClipScoredMs < 2_600L } else null
+                val rawSignals = IntimateSceneRules.evaluate(
                     detections = detections,
                     personBoxes = personBoxes,
                     sceneSafety = evalSafety,
@@ -1270,6 +1281,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     clipKissProb = freshClip?.intimateProb ?: 0f,
                     clipMargin = freshClip?.margin ?: 0f
                 )
+                // On social home feeds (reading text/posts), blur boxes still protect media; never auto-scroll/back unless explicit nudity
+                val signals = if (isSocialFeedBrowse && rawSignals.triggered && !rawSignals.reason.contains("Explicit")) {
+                    rawSignals.copy(triggered = false, instant = false)
+                } else {
+                    rawSignals
+                }
                 if (signals.triggered) {
                     consecutiveIntimateHits++
                     val neededHits = if (signals.instant) 1 else 2
@@ -1584,6 +1601,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 trackedBoxes.clear()
                 activeBlurBoxes = emptyList()
                 lastScreenSignature = null
+                clipGeneration.incrementAndGet()
                 lastClipScore = null
                 lastClipScoredMs = 0L
                 lastClipLaunchMs = 0L
