@@ -1,8 +1,8 @@
 {
-  "versionCode": 40100,
-  "versionName": "4.1",
-  "publishedAt": "2026-11-27T16:36:00Z",
-  "releaseNotes": "• Fix: Eliminated false skips on low-light normal scenes (dance, fight, close-up dialogue) by aligning Rule 4's CLIP safety gate with Rule 3, tightening CLIP continuation thresholds, and requiring horizontal aspect ratio for bed-pose overlap.\n• Includes all v4.0 Hybrid Community Timestamp Skip (CleanStream + MediaSession + custom MCF store + on-device AI fallback) features.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v4.1/SaveGaze-arm64-v8a.apk",
-  "apkSize": 110295942
+  "versionCode": 40200,
+  "versionName": "4.2",
+  "publishedAt": "2026-11-27T17:16:00Z",
+  "releaseNotes": "• Fix: Rebuilt MobileCLIP prompts (6 positive, 17 negative) so shirtless night fights, shirtless injured/lone frames, dark hugs, morgue/hospital beds, and close suspense dialogue score negatively instead of false-skipping.\n• Fix: Stopped single-frame MobileCLIP false-skip spikes on dark/1-face frames (requires clipMargin >= 0.038f for instant skip; borderline frames require 2 consecutive confirming scans).\n• Includes all v4.0 / v4.1 Hybrid Community Timestamp Skip features.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v4.2/SaveGaze-arm64-v8a.apk",
+  "apkSize": 110302498
 }
