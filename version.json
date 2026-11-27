@@ -1,8 +1,8 @@
 {
-  "versionCode": 20500,
-  "versionName": "2.5",
-  "publishedAt": "2026-11-26T19:39:00Z",
-  "releaseNotes": "• Critical Fix: ARM64 MobileCLIP ONNX Model Fix — replaced unsupported dynamic-quantized `mobileclip_vision_q.onnx` (`ConvInteger(10)` ORT failure + corrupted cosine vectors) with native FP32 `mobileclip_vision.onnx` (~3x faster inference, true visual-text alignment, verified live on ARM64 Android 17) and lowered async CLIP scan interval to `600ms` for Nuvio/Stremio/CloudStream clothed kissing scenes.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.5/SaveGaze-arm64-v8a.apk",
-  "apkSize": 110235634
+  "versionCode": 20600,
+  "versionName": "2.6",
+  "publishedAt": "2026-11-27T05:41:00Z",
+  "releaseNotes": "• Improvement: Continuous +10s Progressive Skip Loop — movie & streaming players (Nuvio, Stremio, CloudStream, VLC, YouTube, fullscreen browser videos) never back-exit after 2 skips in Smart Mode; instead SaveGaze blurs, skips +10s/+15s forward cleanly, resets stale frame caches, re-checks the new frame, and keeps skipping +10s step-by-step until normal content returns.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.6/SaveGaze-arm64-v8a.apk",
+  "apkSize": 110235734
 }
