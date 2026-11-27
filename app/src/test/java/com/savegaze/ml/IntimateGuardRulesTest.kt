@@ -441,8 +441,8 @@ class IntimateGuardRulesTest {
             audioLabel = null,
             screenW = 2340f,
             screenH = 1080f,
-            clipKissProb = 0.79f,
-            clipMargin = 0.026f,
+            clipKissProb = 0.82f,
+            clipMargin = 0.027f,
             allowDarkClipFallback = true,
             continuingIntimateScene = true
         )
@@ -481,6 +481,92 @@ class IntimateGuardRulesTest {
             continuingIntimateScene = true
         )
         assertFalse(normalTransitionedFrame.triggered)
+    }
+
+    @Test
+    fun darkFightAndDanceScenesDoNotFalseSkip() {
+        // Dark fight grappling: two faces close, SwiftFormer noisy nsfw=0.38, CLIP borderline
+        val fightLeft = Detection(NudeLabel.FACE_MALE, 0.80f, BoundingBox(380f, 200f, 580f, 420f))
+        val fightRight = Detection(NudeLabel.FACE_MALE, 0.78f, BoundingBox(560f, 210f, 760f, 430f))
+        val fightScene = IntimateSceneRules.evaluate(
+            detections = listOf(fightLeft, fightRight),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0.02f, nsfw = 0.38f, sfw = 0.60f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.62f,
+            clipMargin = 0.008f,
+            allowDarkClipFallback = true
+        )
+        assertFalse("Dark fight should NOT trigger", fightScene.triggered)
+
+        // Same fight but during continuation chain (after a previous false skip)
+        val fightContinuing = IntimateSceneRules.evaluate(
+            detections = listOf(fightLeft, fightRight),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0.02f, nsfw = 0.38f, sfw = 0.60f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.72f,
+            clipMargin = 0.021f,
+            allowDarkClipFallback = true,
+            continuingIntimateScene = true
+        )
+        assertFalse("Dark fight during continuation should NOT trigger", fightContinuing.triggered)
+
+        // Dark dance: close partners, SwiftFormer nsfw=0.30, CLIP low
+        val danceLeft = Detection(NudeLabel.FACE_FEMALE, 0.82f, BoundingBox(400f, 180f, 600f, 400f))
+        val danceRight = Detection(NudeLabel.FACE_MALE, 0.84f, BoundingBox(580f, 190f, 780f, 410f))
+        val danceScene = IntimateSceneRules.evaluate(
+            detections = listOf(danceLeft, danceRight),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.30f, sfw = 0.70f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.58f,
+            clipMargin = 0.005f,
+            allowDarkClipFallback = true
+        )
+        assertFalse("Dark dance should NOT trigger", danceScene.triggered)
+
+        // Standing dancers overlapping side-by-side must NOT trigger horizontal bed pose cue
+        val dancer1 = PersonGenderBox(PersonGender.FEMALE, 0.85f, BoundingBox(500f, 150f, 820f, 920f), 0.1f)
+        val dancer2 = PersonGenderBox(PersonGender.MALE, 0.85f, BoundingBox(620f, 140f, 960f, 930f), 0.1f)
+        val standingDanceOverlap = IntimateSceneRules.evaluate(
+            detections = emptyList(),
+            personBoxes = listOf(dancer1, dancer2),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.38f, sfw = 0.62f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.60f,
+            clipMargin = 0.005f,
+            allowDarkClipFallback = true
+        )
+        assertFalse("Standing overlapping dancers should NOT set kiss/bed cue", standingDanceOverlap.isKissOrBedCue)
+        assertFalse("Standing overlapping dancers should NOT trigger", standingDanceOverlap.triggered)
+
+        // Actual kissing scene should still trigger even with these tighter thresholds
+        val realKiss = IntimateSceneRules.evaluate(
+            detections = listOf(danceLeft, danceRight),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.45f, sfw = 0.55f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.78f,
+            clipMargin = 0.030f,
+            allowDarkClipFallback = true
+        )
+        assertTrue("Actual kissing should still trigger", realKiss.triggered)
     }
 
     @Test

@@ -97,7 +97,7 @@ object IntimateSceneRules {
                     if (iou < 0.25f) continue
                     val unionW = max(p1.x2, p2.x2) - min(p1.x1, p2.x1)
                     val unionH = max(p1.y2, p2.y2) - min(p1.y1, p2.y1)
-                    val horizontalBedPose = unionW >= unionH * 0.85f && max(p1.height, p2.height) >= screenH * 0.16f
+                    val horizontalBedPose = unionW >= unionH * 1.15f && max(p1.height, p2.height) >= screenH * 0.16f
                     val mixedGender = personBoxes[i].gender != personBoxes[j].gender
                     if (horizontalBedPose && (mixedGender || iou >= 0.35f)) {
                         return true
@@ -177,12 +177,12 @@ object IntimateSceneRules {
 
         // 3. MobileCLIP2-S0 clothed kissing / bed / romantic embrace detector (daylight, night, heterosexual & same-sex)
         val hasHumanCue = faces.isNotEmpty() || personBoxes.isNotEmpty() || hasSemiNude || nsfwProb >= 0.16f
-        val closePairClip = kissOrBedCue && clipKissProb >= 0.72f && clipMargin >= 0.022f
+        val closePairClip = kissOrBedCue && clipKissProb >= 0.74f && clipMargin >= 0.023f
         val humanBackedClip = hasHumanCue && clipKissProb >= 0.75f && clipMargin >= 0.025f
         val darkMovieBedClip = allowDarkClipFallback && clipKissProb >= 0.82f && clipMargin >= 0.027f
         val continueMovieClip = continuingIntimateScene && allowDarkClipFallback &&
-            ((kissOrBedCue && clipKissProb >= 0.70f && clipMargin >= 0.020f) ||
-                (clipKissProb >= 0.78f && clipMargin >= 0.025f))
+            ((kissOrBedCue && clipKissProb >= 0.74f && clipMargin >= 0.023f) ||
+                (clipKissProb >= 0.80f && clipMargin >= 0.026f))
         if (closePairClip || humanBackedClip || darkMovieBedClip || continueMovieClip) {
             val isInstantKiss = if (continueMovieClip) {
                 true
@@ -205,11 +205,11 @@ object IntimateSceneRules {
         // 4. Kissing / bed pose must have real NSFW, semi-nude, or intimate audio support;
         // never let noisy low SwiftFormer scores override a fresh safe CLIP score (prevents post-skip loops)
         val hasFreshClipScore = hasFreshVisual && (clipKissProb > 0f || clipMargin != 0f)
-        val clipClearlySafe = hasFreshClipScore && (clipKissProb < 0.68f || clipMargin < 0.010f)
+        val clipClearlySafe = hasFreshClipScore && (clipKissProb < 0.74f || clipMargin < 0.023f)
         val poseTriggered = if (clipClearlySafe) {
             nsfwProb >= 0.65f || (hasSemiNude && nsfwProb >= 0.42f)
         } else {
-            nsfwProb >= 0.36f || (nsfwProb >= 0.20f && (hasSemiNude || audioScore >= 0.35f))
+            nsfwProb >= 0.36f || (nsfwProb >= 0.24f && (hasSemiNude || audioScore >= 0.35f))
         }
         if (kissOrBedCue && poseTriggered) {
             return IntimateSignals(
