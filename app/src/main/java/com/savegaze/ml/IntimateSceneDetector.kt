@@ -154,15 +154,19 @@ object IntimateSceneRules {
         }
 
         // 3. MobileCLIP2-S0 clothed kissing / bed / romantic embrace detector (heterosexual & same-sex)
-        // - Overwhelming kiss/bed detections trigger immediately; moderate detections require 2 separate scans to block pre-kiss & dance/fight false positives
+        // Calibrated directly against Nuvio playback logs: safe playback stays <=0.71 / margin<=0.017; real kisses/bed scenes hit 0.76-0.97 / margin 0.025-0.073
         val hasHumanCue = faces.isNotEmpty() || personBoxes.isNotEmpty() || hasSemiNude || nsfwProb >= 0.16f
-        val closePairClip = kissOrBedCue && clipKissProb >= 0.72f && clipMargin >= 0.025f
-        val humanBackedClip = hasHumanCue && clipKissProb >= 0.80f && clipMargin >= 0.036f
-        val darkMovieBedClip = allowDarkClipFallback && clipKissProb >= 0.86f && clipMargin >= 0.048f
+        val closePairClip = kissOrBedCue && clipKissProb >= 0.74f && clipMargin >= 0.025f
+        val humanBackedClip = hasHumanCue && clipKissProb >= 0.76f && clipMargin >= 0.026f
+        val darkMovieBedClip = allowDarkClipFallback && clipKissProb >= 0.84f && clipMargin >= 0.036f
         if (closePairClip || humanBackedClip || darkMovieBedClip) {
-            val isInstantKiss = (closePairClip && clipKissProb >= 0.88f && clipMargin >= 0.055f) ||
-                (allowDarkClipFallback && humanBackedClip && clipKissProb >= 0.91f && clipMargin >= 0.062f) ||
-                (darkMovieBedClip && clipKissProb >= 0.93f && clipMargin >= 0.068f)
+            val isInstantKiss = if (allowDarkClipFallback) {
+                (closePairClip && clipKissProb >= 0.76f && clipMargin >= 0.025f) ||
+                    (humanBackedClip && clipKissProb >= 0.85f && clipMargin >= 0.038f) ||
+                    (darkMovieBedClip && clipKissProb >= 0.86f && clipMargin >= 0.038f)
+            } else {
+                closePairClip && clipKissProb >= 0.82f && clipMargin >= 0.035f
+            }
             return IntimateSignals(
                 triggered = true,
                 instant = isInstantKiss,

@@ -1125,17 +1125,15 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             val allExcluded = activeBlurBoxes + trackedBoxes.map { it.box }
             val currentSignature = computeScreenSignature(bitmap, allExcluded)
             val screenChange = analyzeScreenChange(lastScreenSignature, currentSignature)
+            val isActiveVideoPlayback = IntimateExitRules.classifyContext(
+                lastForegroundPackage ?: "",
+                lastTreeHints,
+                lastHasSeekBarOrPlayer,
+                bitmap.width > bitmap.height
+            ) == MediaAppContext.MOVIE_SERIES_PLAYER
             lastScreenIsStatic = screenChange.isStatic
-            if (screenChange.isSceneCut) {
-                // Invalidate stale CLIP scores across scene cuts so a kissing shot never triggers on the next normal shot
-                clipGeneration.incrementAndGet()
-                lastClipScore = null
-                lastClipScoredMs = 0L
-                lastEvaluatedClipMs = 0L
-                consecutiveIntimateHits = 0
-            }
 
-            if (screenChange.isStatic && !didScrollRecently && (now - lastFullInferenceMs < 2_500L)) {
+            if (screenChange.isStatic && !isActiveVideoPlayback && !didScrollRecently && (now - lastFullInferenceMs < 2_500L)) {
                 publishHealth {
                     it.copy(
                         lastFrameAtMillis = now,
@@ -1243,7 +1241,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val isSocialFeedBrowse = IntimateExitRules.isSocialFeedApp(activePkg) &&
                     activeContext == MediaAppContext.BROWSER_OR_GENERAL
                 if (clipDetector != null &&
-                    !screenChange.isStatic &&
+                    (!screenChange.isStatic || isActiveVideoPlayback) &&
                     !isSocialFeedBrowse &&
                     (activeContext != MediaAppContext.BROWSER_OR_GENERAL || lastHasSeekBarOrPlayer || isLandscapeFrame) &&
                     now - lastClipLaunchMs >= 400L &&
@@ -1277,7 +1275,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val freshAudioScore = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.score else 0f
                 val freshAudioLabel = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.topLabel else ""
                 val evalSafety = sceneSafety ?: if (!lastScreenIsStatic) null else lastSceneSafety
-                val freshClip = if (!isSocialFeedBrowse) lastClipScore?.takeIf { now - lastClipScoredMs < 1_400L } else null
+                val freshClip = if (!isSocialFeedBrowse) lastClipScore?.takeIf { now - lastClipScoredMs < 2_200L } else null
                 val rawSignals = IntimateSceneRules.evaluate(
                     detections = detections,
                     personBoxes = personBoxes,
@@ -1520,7 +1518,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             val diff = abs(((c1 shr 16) and 0xFF) - ((c2 shr 16) and 0xFF)) +
                 abs(((c1 shr 8) and 0xFF) - ((c2 shr 8) and 0xFF)) +
                 abs((c1 and 0xFF) - (c2 and 0xFF))
-            if (diff < 36) totalMatches++
+            if (diff < 18) totalMatches++
         }
         if (totalValid < 8) return ScreenChangeResult(isStatic = true, isSceneCut = false)
         val rate = totalMatches.toFloat() / totalValid.toFloat()

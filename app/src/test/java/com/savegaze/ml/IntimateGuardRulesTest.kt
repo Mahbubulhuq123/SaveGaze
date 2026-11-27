@@ -295,8 +295,8 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.90f,
-            clipMargin = 0.058f,
+            clipKissProb = 0.78f,
+            clipMargin = 0.028f,
             allowDarkClipFallback = true
         )
         assertTrue(clipKiss.triggered)
@@ -313,14 +313,14 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.82f,
-            clipMargin = 0.038f,
+            clipKissProb = 0.79f,
+            clipMargin = 0.030f,
             allowDarkClipFallback = true
         )
         assertTrue(moderateDaylightKiss.triggered)
         assertFalse(moderateDaylightKiss.instant)
 
-        // Strong daylight tight kiss fires IMMEDIATELY
+        // Strong daylight/movie kiss fires IMMEDIATELY (matches real 0.86-0.97 phone log scores)
         val strongDaylightKiss = IntimateSceneRules.evaluate(
             detections = listOf(rightFace),
             personBoxes = emptyList(),
@@ -330,14 +330,14 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.92f,
-            clipMargin = 0.064f,
+            clipKissProb = 0.87f,
+            clipMargin = 0.040f,
             allowDarkClipFallback = true
         )
         assertTrue(strongDaylightKiss.triggered)
         assertTrue(strongDaylightKiss.instant)
 
-        // Dark bedroom kissing/bed scene in movie player (0 upright faces detected in dark lighting) still triggers
+        // Dark bedroom kissing/bed scene in movie player (0 upright faces detected in dark lighting) fires immediately when clear
         val darkBedMovieScene = IntimateSceneRules.evaluate(
             detections = emptyList(),
             personBoxes = emptyList(),
@@ -347,11 +347,12 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.87f,
-            clipMargin = 0.050f,
+            clipKissProb = 0.88f,
+            clipMargin = 0.042f,
             allowDarkClipFallback = true
         )
         assertTrue(darkBedMovieScene.triggered)
+        assertTrue(darkBedMovieScene.instant)
 
         // Same dark room without faces on Social Reels (allowDarkClipFallback=false) must NOT false-trigger
         val darkRoomReelsNoPeople = IntimateSceneRules.evaluate(
@@ -363,8 +364,8 @@ class IntimateGuardRulesTest {
             screenW = 1080f,
             screenH = 2340f,
             sensitivity = 0.25f,
-            clipKissProb = 0.87f,
-            clipMargin = 0.050f,
+            clipKissProb = 0.88f,
+            clipMargin = 0.042f,
             allowDarkClipFallback = false
         )
         assertFalse(darkRoomReelsNoPeople.triggered)
