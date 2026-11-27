@@ -418,7 +418,8 @@ class IntimateGuardRulesTest {
 
     @Test
     fun continuingSkipChainSustainsOverLongIntimateScenesAndStopsOnNormalTransition() {
-        val darkBedStart = IntimateSceneRules.evaluate(
+        // Single dark-frame spike with borderline margin (0.0285) must require 2 consecutive hits (no single-frame false skip)
+        val darkBedSpikeBorderline = IntimateSceneRules.evaluate(
             detections = emptyList(),
             personBoxes = emptyList(),
             sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.08f, sfw = 0.92f),
@@ -428,6 +429,21 @@ class IntimateGuardRulesTest {
             screenH = 1080f,
             clipKissProb = 0.88f,
             clipMargin = 0.0285f,
+            allowDarkClipFallback = true
+        )
+        assertTrue(darkBedSpikeBorderline.triggered)
+        assertFalse(darkBedSpikeBorderline.instant)
+
+        val darkBedStart = IntimateSceneRules.evaluate(
+            detections = emptyList(),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.08f, sfw = 0.92f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.91f,
+            clipMargin = 0.042f,
             allowDarkClipFallback = true
         )
         assertTrue(darkBedStart.triggered)

@@ -187,9 +187,9 @@ object IntimateSceneRules {
             val isInstantKiss = if (continueMovieClip) {
                 true
             } else if (allowDarkClipFallback) {
-                (closePairClip && clipKissProb >= 0.74f && clipMargin >= 0.024f) ||
-                    (humanBackedClip && clipKissProb >= 0.81f && clipMargin >= 0.030f) ||
-                    (darkMovieBedClip && clipKissProb >= 0.85f && clipMargin >= 0.028f)
+                (closePairClip && clipKissProb >= 0.78f && clipMargin >= 0.028f) ||
+                    (humanBackedClip && clipKissProb >= 0.86f && clipMargin >= 0.038f) ||
+                    (darkMovieBedClip && clipKissProb >= 0.87f && clipMargin >= 0.038f)
             } else {
                 closePairClip && clipKissProb >= 0.80f && clipMargin >= 0.032f
             }
