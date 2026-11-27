@@ -217,6 +217,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     @Volatile private var lastSceneSafety: SceneSafetyScores? = null
     @Volatile private var lastClipScore: ClipIntimateScore? = null
     @Volatile private var lastClipScoredMs = 0L
+    private var lastEvaluatedClipMs = 0L
     private var lastClipLaunchMs = 0L
     private val clipInferenceInFlight = AtomicBoolean(false)
     private val clipGeneration = AtomicInteger(0)
@@ -1130,6 +1131,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 clipGeneration.incrementAndGet()
                 lastClipScore = null
                 lastClipScoredMs = 0L
+                lastEvaluatedClipMs = 0L
                 consecutiveIntimateHits = 0
             }
 
@@ -1296,13 +1298,20 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     rawSignals
                 }
                 if (signals.triggered) {
-                    consecutiveIntimateHits++
-                    val neededHits = if (signals.instant) 1 else 2
-                    if (consecutiveIntimateHits >= neededHits && (now - lastIntimateActionMs >= 1_200L)) {
-                        Log.i(TAG, "Triggering intimate action: ${signals.reason} (conf=${signals.confidence}, pkg=$activePkg)")
-                        consecutiveIntimateHits = 0
-                        serviceScope.launch(Dispatchers.Main) {
-                            triggerIntimateAction(signals)
+                    val isClipTrigger = signals.reason.contains("CLIP")
+                    val isDuplicateClipSample = !signals.instant && isClipTrigger && freshClip != null && lastClipScoredMs == lastEvaluatedClipMs
+                    if (!isDuplicateClipSample) {
+                        if (isClipTrigger && freshClip != null) {
+                            lastEvaluatedClipMs = lastClipScoredMs
+                        }
+                        consecutiveIntimateHits++
+                        val neededHits = if (signals.instant) 1 else 2
+                        if (consecutiveIntimateHits >= neededHits && (now - lastIntimateActionMs >= 1_400L)) {
+                            Log.i(TAG, "Triggering intimate action: ${signals.reason} (conf=${signals.confidence}, pkg=$activePkg)")
+                            consecutiveIntimateHits = 0
+                            serviceScope.launch(Dispatchers.Main) {
+                                triggerIntimateAction(signals)
+                            }
                         }
                     }
                 } else {
@@ -1548,7 +1557,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
     private fun triggerIntimateAction(signals: com.savegaze.ml.IntimateSignals) {
         val now = System.currentTimeMillis()
-        if (now - lastIntimateActionMs < 1_200L) return
+        if (now - lastIntimateActionMs < 1_400L) return
         if (!intimateActionInProgress.compareAndSet(false, true)) return
 
         val pkg = lastForegroundPackage ?: ""
@@ -1597,7 +1606,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                             performSkipSceneForward(w, h)
                             dispatchMediaFastForward()
                         }
-                        delay(950L)
+                        delay(1_150L)
                     }
                     ExitActionType.PAUSE_AND_BACK -> {
                         consecutiveSkipsOnSameVideo = 0
@@ -1606,21 +1615,27 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
                 }
             } finally {
+                overlayManager?.clearBlurRegions()
+                overlayManager?.hideIntimateShieldOverlay()
+                audioIntimateDetector?.resetWindow()
                 trackedBoxes.clear()
                 activeBlurBoxes = emptyList()
                 lastScreenSignature = null
                 clipGeneration.incrementAndGet()
                 lastClipScore = null
                 lastClipScoredMs = 0L
+                lastEvaluatedClipMs = 0L
                 lastClipLaunchMs = 0L
                 lastSceneSafety = null
                 lastAudioScoredMs = 0L
                 consecutiveIntimateHits = 0
                 consecutiveAudioHits = 0
-                overlayManager?.clearBlurRegions()
-                overlayManager?.hideIntimateShieldOverlay()
-                lastIntimateActionMs = System.currentTimeMillis()
-                intimateActionInProgress.set(false)
+                try {
+                    delay(250L)
+                } finally {
+                    lastIntimateActionMs = System.currentTimeMillis()
+                    intimateActionInProgress.set(false)
+                }
             }
         }
     }

@@ -295,16 +295,16 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.74f,
-            clipMargin = 0.026f,
+            clipKissProb = 0.90f,
+            clipMargin = 0.058f,
             allowDarkClipFallback = true
         )
         assertTrue(clipKiss.triggered)
         assertTrue(clipKiss.instant)
         assertTrue(clipKiss.reason.contains("CLIP"))
 
-        // Single-face tight daylight kiss in movie player must fire INSTANTLY (no 2-3s delay)
-        val tightDaylightMovieKiss = IntimateSceneRules.evaluate(
+        // Moderate 1-face close-up kiss requires 2 separate scans (prevents pre-kiss/dance single-frame false skip)
+        val moderateDaylightKiss = IntimateSceneRules.evaluate(
             detections = listOf(rightFace),
             personBoxes = emptyList(),
             sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.04f, sfw = 0.96f),
@@ -313,12 +313,29 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.74f,
-            clipMargin = 0.028f,
+            clipKissProb = 0.82f,
+            clipMargin = 0.038f,
             allowDarkClipFallback = true
         )
-        assertTrue(tightDaylightMovieKiss.triggered)
-        assertTrue(tightDaylightMovieKiss.instant)
+        assertTrue(moderateDaylightKiss.triggered)
+        assertFalse(moderateDaylightKiss.instant)
+
+        // Strong daylight tight kiss fires IMMEDIATELY
+        val strongDaylightKiss = IntimateSceneRules.evaluate(
+            detections = listOf(rightFace),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.04f, sfw = 0.96f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2400f,
+            screenH = 1080f,
+            sensitivity = 0.25f,
+            clipKissProb = 0.92f,
+            clipMargin = 0.064f,
+            allowDarkClipFallback = true
+        )
+        assertTrue(strongDaylightKiss.triggered)
+        assertTrue(strongDaylightKiss.instant)
 
         // Dark bedroom kissing/bed scene in movie player (0 upright faces detected in dark lighting) still triggers
         val darkBedMovieScene = IntimateSceneRules.evaluate(
@@ -330,8 +347,8 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.83f,
-            clipMargin = 0.042f,
+            clipKissProb = 0.87f,
+            clipMargin = 0.050f,
             allowDarkClipFallback = true
         )
         assertTrue(darkBedMovieScene.triggered)
@@ -346,8 +363,8 @@ class IntimateGuardRulesTest {
             screenW = 1080f,
             screenH = 2340f,
             sensitivity = 0.25f,
-            clipKissProb = 0.83f,
-            clipMargin = 0.042f,
+            clipKissProb = 0.87f,
+            clipMargin = 0.050f,
             allowDarkClipFallback = false
         )
         assertFalse(darkRoomReelsNoPeople.triggered)

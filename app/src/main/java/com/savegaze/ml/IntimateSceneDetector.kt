@@ -154,16 +154,15 @@ object IntimateSceneRules {
         }
 
         // 3. MobileCLIP2-S0 clothed kissing / bed / romantic embrace detector (heterosexual & same-sex)
-        // - With 2+ close faces or human presence, triggers immediately in movie players (no 2-3s delay)
-        // - In dark bedroom scenes inside movie players where face detectors miss in low light, allow high-confidence CLIP fallback
+        // - Overwhelming kiss/bed detections trigger immediately; moderate detections require 2 separate scans to block pre-kiss & dance/fight false positives
         val hasHumanCue = faces.isNotEmpty() || personBoxes.isNotEmpty() || hasSemiNude || nsfwProb >= 0.16f
-        val closePairClip = kissOrBedCue && clipKissProb >= 0.62f && clipMargin >= 0.015f
-        val humanBackedClip = hasHumanCue && clipKissProb >= 0.72f && clipMargin >= 0.025f
-        val darkMovieBedClip = allowDarkClipFallback && clipKissProb >= 0.80f && clipMargin >= 0.036f
+        val closePairClip = kissOrBedCue && clipKissProb >= 0.72f && clipMargin >= 0.025f
+        val humanBackedClip = hasHumanCue && clipKissProb >= 0.80f && clipMargin >= 0.036f
+        val darkMovieBedClip = allowDarkClipFallback && clipKissProb >= 0.86f && clipMargin >= 0.048f
         if (closePairClip || humanBackedClip || darkMovieBedClip) {
-            val isInstantKiss = closePairClip ||
-                (allowDarkClipFallback && humanBackedClip) ||
-                (darkMovieBedClip && clipKissProb >= 0.88f && clipMargin >= 0.052f)
+            val isInstantKiss = (closePairClip && clipKissProb >= 0.88f && clipMargin >= 0.055f) ||
+                (allowDarkClipFallback && humanBackedClip && clipKissProb >= 0.91f && clipMargin >= 0.062f) ||
+                (darkMovieBedClip && clipKissProb >= 0.93f && clipMargin >= 0.068f)
             return IntimateSignals(
                 triggered = true,
                 instant = isInstantKiss,

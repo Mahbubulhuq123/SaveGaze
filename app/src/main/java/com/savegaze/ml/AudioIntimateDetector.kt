@@ -148,6 +148,15 @@ class AudioIntimateDetector(private val appContext: Context) {
     var lastScoredAtMs: Long = 0L
         private set
 
+    @Volatile
+    private var resetRequested: Boolean = false
+
+    fun resetWindow() {
+        resetRequested = true
+        lastScoredAtMs = 0L
+        latestResult = AudioIntimateResult(0f, "", 0f, false)
+    }
+
     init {
         val modelBytes = appContext.assets.open(MODEL_FILE).use { it.readBytes() }
         val opts = OrtSession.SessionOptions().apply {
@@ -210,6 +219,12 @@ class AudioIntimateDetector(private val appContext: Context) {
 
                 try {
                     while (isActive && record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                        if (resetRequested) {
+                            resetRequested = false
+                            ringFill = 0
+                            sinceLastHop = 0
+                            latestResult = AudioIntimateResult(0f, "", 0f, false)
+                        }
                         val screenOn = powerManager?.isInteractive ?: true
                         val mediaPlaying = audioManager?.isMusicActive ?: true
                         if (!screenOn || !mediaPlaying) {

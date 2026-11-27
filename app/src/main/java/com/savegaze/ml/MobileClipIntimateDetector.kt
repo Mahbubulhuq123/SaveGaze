@@ -154,7 +154,7 @@ class MobileClipIntimateDetector(context: Context) {
                 if (centerSquare !== bitmap) centerSquare.recycle()
                 return@withContext ClipIntimateScore(0f, -0.2f, 0f, 0.2f)
             }
-            val darkGain = if (meanLuma in 6.5f..72f) (95f / meanLuma).coerceIn(1.0f, 3.0f) else 1.0f
+            val darkGain = if (meanLuma in 12f..62f) (75f / meanLuma).coerceIn(1.0f, 1.85f) else 1.0f
             val buffer = if (darkGain > 1.05f) {
                 centerSquare.toBoostedFloatBuffer(INPUT_SIZE, INPUT_SIZE, darkGain)
             } else {
