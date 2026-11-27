@@ -39,10 +39,10 @@ public static class NudeNetFilterEngine
             bool hasStrongFemaleGen = IntimateDetections.Any(d =>
                 d.Label == NudeLabel.FemaleGenitaliaExposed && d.Confidence >= 0.42f);
             bool hasBareFemaleBreast = IntimateDetections.Any(d =>
-                d.Label == NudeLabel.FemaleBreastExposed && d.Confidence >= 0.36f);
+                d.Label == NudeLabel.FemaleBreastExposed && d.Confidence >= 0.40f);
             bool hasMaleAnatomy = IntimateDetections.Any(d =>
                 d.Label == NudeLabel.MaleGenitaliaExposed ||
-                (d.Label == NudeLabel.MaleBreastExposed && d.Confidence >= 0.25f));
+                (d.Label == NudeLabel.MaleBreastExposed && d.Confidence >= 0.28f));
             bool hasFemaleFace = Faces.Any(f => f.Label == NudeLabel.FaceFemale);
             bool hasMaleFace = Faces.Any(f => f.Label == NudeLabel.FaceMale);
 
@@ -56,17 +56,14 @@ public static class NudeNetFilterEngine
                 bool isCloseTie = bestPerson.OppositeConfidence > 0f && margin < 0.14f && bestPerson.Confidence < 0.48f;
                 if (bestPerson.Gender == PersonGender.Male)
                 {
-                    bool hasStrongFemaleCovered = IntimateDetections.Any(d =>
-                        d.Label is NudeLabel.FemaleBreastCovered or NudeLabel.FemaleGenitaliaCovered &&
-                        d.Confidence >= 0.42f);
-                    bool contradictedByFemale = hasBareFemaleBreast ||
-                        (hasFemaleFace && !hasMaleFace && (isCloseTie || bestPerson.Confidence < 0.45f)) ||
-                        (hasStrongFemaleCovered && !hasMaleFace && !hasMaleAnatomy && (isCloseTie || bestPerson.Confidence < 0.42f));
+                    bool contradictedByFemale =
+                        (hasBareFemaleBreast && !hasMaleFace && (isCloseTie || bestPerson.Confidence < 0.48f)) ||
+                        (hasFemaleFace && !hasMaleFace && (isCloseTie || bestPerson.Confidence < 0.45f));
                     if (!contradictedByFemale) return ClusterGender.Male;
                 }
                 else
                 {
-                    if (hasMaleFace && !hasFemaleFace && (isCloseTie || bestPerson.Confidence < 0.42f))
+                    if (hasMaleFace && !hasFemaleFace && (isCloseTie || bestPerson.Confidence < 0.40f))
                     {
                         return ClusterGender.Male;
                     }
@@ -118,10 +115,17 @@ public static class NudeNetFilterEngine
         float tileHeight,
         float offsetX = 0f,
         float offsetY = 0f,
+        float confidenceThreshold = 0.25f) =>
+        PostProcessScaled(output, tileWidth / ModelWidth, tileHeight / ModelHeight, offsetX, offsetY, confidenceThreshold);
+
+    public static List<Detection> PostProcessScaled(
+        float[][] output,
+        float scaleX,
+        float scaleY,
+        float offsetX = 0f,
+        float offsetY = 0f,
         float confidenceThreshold = 0.25f)
     {
-        float scaleX = tileWidth / ModelWidth;
-        float scaleY = tileHeight / ModelHeight;
         var candidates = new List<Detection>();
 
         for (int i = 0; i < NumPredictions; i++)
@@ -146,10 +150,11 @@ public static class NudeNetFilterEngine
             float femaleFaceScore = output[4 + (int)NudeLabel.FaceFemale][i];
             float maleFaceScore = output[4 + (int)NudeLabel.FaceMale][i];
             if (bestClassIdx == (int)NudeLabel.FaceFemale &&
-                (maleFaceScore >= femaleFaceScore * 0.55f || maleFaceScore >= 0.14f))
+                maleFaceScore >= femaleFaceScore * 0.92f &&
+                maleFaceScore >= 0.30f)
             {
                 bestClassIdx = (int)NudeLabel.FaceMale;
-                bestClassScore = Math.Max(maleFaceScore, bestClassScore);
+                bestClassScore = maleFaceScore;
             }
 
             var labelOpt = NudeLabelExtensions.FromIndex(bestClassIdx);
@@ -159,14 +164,14 @@ public static class NudeNetFilterEngine
             float minThreshold = label switch
             {
                 NudeLabel.FaceFemale => 0.18f,
-                NudeLabel.FaceMale => 0.16f,
-                NudeLabel.FemaleBreastExposed or NudeLabel.FemaleGenitaliaExposed or
-                NudeLabel.ButtocksExposed or NudeLabel.AnusExposed => Math.Min(confidenceThreshold, 0.14f),
-                NudeLabel.FeetExposed => Math.Min(confidenceThreshold, 0.16f),
-                NudeLabel.ArmpitsExposed or NudeLabel.BellyExposed => Math.Min(confidenceThreshold, 0.15f),
-                NudeLabel.MaleBreastExposed or NudeLabel.MaleGenitaliaExposed => Math.Min(confidenceThreshold, 0.16f),
-                NudeLabel.FemaleGenitaliaCovered or NudeLabel.ButtocksCovered => Math.Min(confidenceThreshold, 0.20f),
-                NudeLabel.FemaleBreastCovered => Math.Min(confidenceThreshold, 0.22f),
+                NudeLabel.FaceMale => 0.18f,
+                NudeLabel.FemaleBreastExposed or NudeLabel.FemaleGenitaliaExposed => Math.Min(confidenceThreshold, 0.16f),
+                NudeLabel.ButtocksExposed or NudeLabel.AnusExposed => Math.Min(confidenceThreshold, 0.18f),
+                NudeLabel.FeetExposed => Math.Min(confidenceThreshold, 0.22f),
+                NudeLabel.ArmpitsExposed or NudeLabel.BellyExposed => Math.Min(confidenceThreshold, 0.20f),
+                NudeLabel.MaleBreastExposed or NudeLabel.MaleGenitaliaExposed => Math.Min(confidenceThreshold, 0.18f),
+                NudeLabel.FemaleGenitaliaCovered or NudeLabel.ButtocksCovered => Math.Min(confidenceThreshold, 0.24f),
+                NudeLabel.FemaleBreastCovered => Math.Min(confidenceThreshold, 0.24f),
                 _ => confidenceThreshold
             };
             if (bestClassScore < minThreshold) continue;
@@ -210,9 +215,9 @@ public static class NudeNetFilterEngine
         NudeLabel.FemaleBreastCovered or NudeLabel.FemaleBreastExposed => (w * 0.25f, h * 0.30f),
         NudeLabel.FemaleGenitaliaCovered or NudeLabel.FemaleGenitaliaExposed => (w * 0.20f, h * 0.22f),
         NudeLabel.BellyExposed => (w * 0.35f, h * 0.35f),
-        NudeLabel.ButtocksCovered or NudeLabel.ButtocksExposed => (w * 0.22f, h * 0.25f),
-        NudeLabel.ArmpitsExposed => (w * 0.65f, h * 0.60f),
-        NudeLabel.FeetExposed => (w * 0.35f, h * 0.70f),
+        NudeLabel.ButtocksCovered or NudeLabel.ButtocksExposed => (w * 0.18f, h * 0.20f),
+        NudeLabel.ArmpitsExposed => (w * 0.30f, h * 0.30f),
+        NudeLabel.FeetExposed => (w * 0.20f, h * 0.25f),
         NudeLabel.MaleBreastExposed or NudeLabel.MaleGenitaliaExposed => (w * 0.10f, h * 0.12f),
         NudeLabel.AnusCovered or NudeLabel.AnusExposed => (w * 0.10f, h * 0.10f),
         NudeLabel.FaceFemale or NudeLabel.FaceMale => (0f, 0f),
@@ -262,11 +267,26 @@ public static class NudeNetFilterEngine
             allFaces.All(face => det.Box.Iou(face.Box) <= 0.35f)).ToList();
 
         var validNsfwParts = frame != null
-            ? rawNsfwParts.Where(det => det.Label switch
+            ? rawNsfwParts.Where(det =>
             {
-                NudeLabel.FemaleBreastCovered => det.Confidence >= 0.34f || frame.GetSkinFraction(det.Box) >= 0.10f,
-                NudeLabel.MaleBreastExposed => frame.GetSkinFraction(det.Box) >= 0.22f,
-                _ => true
+                bool nearFace = allFaces.Any(f =>
+                    MathF.Abs(f.Box.CenterX - det.Box.CenterX) < Math.Max(f.Box.Width * 2.5f, det.Box.Width * 1.5f));
+                bool nearPerson = personDetections.Any(p => det.Box.Iou(p.Box) > 0.08f);
+                var contextBox = new BoundingBox(
+                    Math.Max(0f, det.Box.X1 - det.Box.Width * 0.15f),
+                    Math.Max(0f, det.Box.Y1 - det.Box.Height * 0.15f),
+                    det.Box.X2 + det.Box.Width * 0.15f,
+                    det.Box.Y2 + det.Box.Height * 0.15f);
+                return det.Label switch
+                {
+                    NudeLabel.FemaleBreastCovered =>
+                        (det.Confidence >= 0.48f && (nearPerson || frame.HasHumanSkin(contextBox, 0.06f, nearFace))) ||
+                        (det.Confidence >= 0.28f && frame.GetSkinFraction(det.Box) >= 0.12f),
+                    NudeLabel.MaleBreastExposed => frame.GetSkinFraction(det.Box) >= 0.22f,
+                    NudeLabel.ButtocksCovered or NudeLabel.FemaleGenitaliaCovered or NudeLabel.AnusCovered =>
+                        det.Confidence >= 0.30f && (nearPerson || frame.HasHumanSkin(contextBox, 0.05f, nearFace)),
+                    _ => true
+                };
             }).ToList()
             : rawNsfwParts;
 
@@ -328,7 +348,10 @@ public static class NudeNetFilterEngine
             foreach (var c in clusters)
             {
                 bool isStrictMaleDet = det.Label is NudeLabel.MaleBreastExposed or NudeLabel.MaleGenitaliaExposed;
-                bool isStrictFemaleDet = det.Label == NudeLabel.FemaleGenitaliaExposed && det.Confidence >= 0.42f;
+                bool isStrictFemaleDet =
+                    (det.Label == NudeLabel.FemaleGenitaliaExposed && det.Confidence >= 0.38f) ||
+                    (det.Label == NudeLabel.FemaleBreastExposed && det.Confidence >= 0.34f) ||
+                    (det.Label == NudeLabel.FemaleBreastCovered && det.Confidence >= 0.30f);
                 bool clusterIsConfirmedFemale =
                     (c.PrimaryPersonBox is { Gender: PersonGender.Female, Confidence: >= 0.50f }) ||
                     c.Faces.Any(f => f.Label == NudeLabel.FaceFemale);
@@ -491,6 +514,11 @@ public static class NudeNetFilterEngine
                             NudeLabel.ArmpitsExposed or NudeLabel.ButtocksCovered or
                             NudeLabel.ButtocksExposed or NudeLabel.MaleGenitaliaExposed);
                     }
+                    if (g == ClusterGender.Unknown && c.Faces.Count == 0 && c.PersonBoxes.Count == 0)
+                    {
+                        return c.IntimateDetections.Any(d => d.Label.IsExposed() && d.Confidence >= 0.36f) ||
+                               c.IntimateDetections.Any(d => d.Confidence >= 0.55f);
+                    }
                     return true;
 
                 case GenderFilter.FemaleOnly:
@@ -502,29 +530,29 @@ public static class NudeNetFilterEngine
                             d.Label != NudeLabel.MaleGenitaliaExposed);
                     }
 
-                    bool hasFemaleAnatomy = c.IntimateDetections.Any(d =>
-                        d.Label is NudeLabel.FemaleBreastExposed or NudeLabel.FemaleGenitaliaExposed ||
-                        (d.Label == NudeLabel.FemaleBreastCovered && d.Confidence >= 0.30f) ||
-                        (d.Label == NudeLabel.FemaleGenitaliaCovered && d.Confidence >= 0.28f));
                     bool hasStrongExplicitFemale = c.IntimateDetections.Any(d =>
-                        (d.Label == NudeLabel.FemaleBreastExposed && d.Confidence >= 0.34f) ||
-                        (d.Label == NudeLabel.FemaleGenitaliaExposed && d.Confidence >= 0.30f));
+                        (d.Label == NudeLabel.FemaleBreastExposed && d.Confidence >= 0.38f) ||
+                        (d.Label == NudeLabel.FemaleGenitaliaExposed && d.Confidence >= 0.32f));
                     bool hasMaleAnat = c.IntimateDetections.Any(d =>
                         d.Label is NudeLabel.MaleBreastExposed or NudeLabel.MaleGenitaliaExposed);
                     if (hasMaleAnat) return false;
-                    if (sceneHasMaleFace && !sceneHasFemaleFace && !hasFemaleAnatomy) return false;
+                    if (sceneHasMaleFace && !sceneHasFemaleFace && !hasStrongExplicitFemale) return false;
 
                     int semiCueCount = c.IntimateDetections.Count(d =>
                         d.Label is NudeLabel.BellyExposed or NudeLabel.ArmpitsExposed or
                         NudeLabel.FemaleBreastCovered or NudeLabel.FemaleGenitaliaCovered or
                         NudeLabel.ButtocksExposed or NudeLabel.ButtocksCovered);
+                    float maxFemaleCovered = c.IntimateDetections
+                        .Where(d => d.Label is NudeLabel.FemaleBreastCovered or NudeLabel.FemaleGenitaliaCovered)
+                        .Select(d => d.Confidence)
+                        .DefaultIfEmpty(0f)
+                        .Max();
 
-                    return hasStrongExplicitFemale || hasFemaleAnatomy ||
-                        c.IntimateDetections.Any(d =>
-                            (d.Label == NudeLabel.ButtocksExposed && d.Confidence >= 0.32f) ||
-                            (d.Label == NudeLabel.ButtocksCovered && d.Confidence >= 0.38f)) ||
+                    return hasStrongExplicitFemale ||
+                        maxFemaleCovered >= 0.65f ||
+                        c.IntimateDetections.Any(d => d.Label == NudeLabel.ButtocksExposed && d.Confidence >= 0.42f) ||
                         (semiCueCount >= 2 && c.IntimateDetections.Any(d =>
-                            d.Label is NudeLabel.FemaleBreastCovered or NudeLabel.ButtocksCovered or NudeLabel.ButtocksExposed));
+                            d.Label is NudeLabel.FemaleBreastCovered or NudeLabel.FemaleGenitaliaCovered));
 
                 case GenderFilter.MaleOnly:
                     if (g == ClusterGender.Female) return false;
@@ -546,7 +574,9 @@ public static class NudeNetFilterEngine
         List<BoundingBox> protectedFaces = !blurFaces
             ? correctedFaces.Select(f =>
             {
-                if (keptBodyFaces.Contains(f))
+                bool inKeptBody = keptBodyFaces.Contains(f) ||
+                    keptBodyClusters.Any(c => c.AllBoxes.Any(b => f.Box.Iou(b) > 0.04f));
+                if (inKeptBody)
                 {
                     float jawBottom = Math.Max(f.Box.Y2 - f.Box.Height * 0.14f, f.Box.Y1 + f.Box.Height * 0.72f);
                     return new BoundingBox(f.Box.X1, f.Box.Y1, f.Box.X2, jawBottom);
@@ -622,12 +652,14 @@ public static class NudeNetFilterEngine
                 }
                 else if (pBox is { } pb)
                 {
+                    var topPart = partsInCluster.MinBy(d => d.Box.Y1)!;
+                    float topPartH = Math.Max(topPart.Box.Height, 1f);
                     float padX = Math.Max(pb.Width * 0.06f, 12f);
                     float left = Math.Max(0f, Math.Min(pb.X1 - padX, partMinX - 12f));
                     float right = Math.Max(pb.X2 + padX, partMaxX + 12f);
                     float topY = blurFaces
                         ? Math.Max(0f, pb.Y1 - pb.Height * 0.05f)
-                        : Math.Max(0f, Math.Min(pb.Y1, partMinY - 12f));
+                        : Math.Max(0f, Math.Min(pb.Y1 + pb.Height * 0.15f, partMinY - Math.Max(topPartH * 0.75f, 18f)));
                     float naturalBottomY = Math.Max(pb.Y2 + 12f, partMaxY + 24f);
                     float containerBottom = frame?.FindMediaContainerBottom(partMaxY, clusterBounds) ?? float.MaxValue;
                     float bottomY = Math.Max(partMaxY + 15f, Math.Min(naturalBottomY, containerBottom));
@@ -652,7 +684,7 @@ public static class NudeNetFilterEngine
                         : blurFaces && hasUpperChest
                             ? Math.Max(0f, partMinY - topPartH * 1.45f)
                             : hasUpperChest
-                                ? Math.Max(0f, partMinY - topPartH * 0.78f)
+                                ? Math.Max(0f, partMinY - topPartH * 0.95f)
                                 : Math.Max(0f, partMinY - topPartH * 1.25f);
                     float naturalBottomY = partMaxY + partH * 0.45f;
                     float containerBottom = frame?.FindMediaContainerBottom(partMaxY, clusterBounds) ?? float.MaxValue;

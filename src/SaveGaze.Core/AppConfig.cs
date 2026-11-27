@@ -24,6 +24,8 @@ public sealed class AppConfig
     public bool AutoMovieAudioEnabled { get; set; } = true;
     public IntimateActionMode IntimateActionMode { get; set; } = IntimateActionMode.SmartContext;
     public DrmAppPolicy DrmAppPolicy { get; set; } = DrmAppPolicy.WarnOnly;
+    public bool CommunitySkipEnabled { get; set; } = true;
+    public List<CustomSkipEntry> CustomSkipEntries { get; set; } = [];
 
     // ContentGuard Parity
     public bool WebsiteBlockerEnabled { get; set; } = true;
@@ -115,6 +117,31 @@ public sealed class AppConfig
         CustomKeywords = CustomKeywords.Select(k => k.Trim().ToLowerInvariant()).Where(k => k.Length > 0).Distinct().ToList();
         CustomWebsites = CustomWebsites.Select(ContentGuardRules.NormalizeHost).Where(w => w.Length > 0).Distinct().ToList();
         CustomApps = CustomApps.Select(a => a.Trim().ToLowerInvariant().Replace(".exe", "")).Where(a => a.Length > 0).Distinct().ToList();
+        CustomSkipEntries ??= [];
+    }
+
+    public bool SaveCustomSkipEntry(string rawTitle, IReadOnlyList<SkipSegment> segments)
+    {
+        if (segments.Count == 0) return false;
+        var norm = CommunitySkipRules.NormalizeTitle(rawTitle);
+        string displayTitle = norm.EpisodeTag != null ? $"{norm.BaseTitle} ({norm.EpisodeTag})" : norm.BaseTitle;
+        if (string.IsNullOrWhiteSpace(displayTitle)) return false;
+
+        string key = CommunitySkipRules.NormalizeKey(norm.BaseTitle, norm.EpisodeTag);
+        CustomSkipEntries = CustomSkipEntries
+            .Where(e => !string.Equals(e.Key, key, StringComparison.Ordinal))
+            .Append(new CustomSkipEntry(key, displayTitle, CommunitySkipRules.MergeNearbySegments(segments)))
+            .ToList();
+        return true;
+    }
+
+    public bool RemoveCustomSkipEntry(string key)
+    {
+        int before = CustomSkipEntries.Count;
+        CustomSkipEntries = CustomSkipEntries
+            .Where(e => !string.Equals(e.Key, key, StringComparison.Ordinal))
+            .ToList();
+        return CustomSkipEntries.Count != before;
     }
 
     /// <summary>

@@ -143,6 +143,13 @@ public sealed record FilteredDetections(
 
 public sealed record SceneSafetyScores(float Nsfl, float Nsfw, float Sfw);
 
+public sealed record ClipIntimateScore(
+    float IntimateProb,
+    float Margin,
+    float MaxPosSim,
+    float MaxNegSim
+);
+
 public sealed record IntimateSignals(
     bool Triggered,
     bool Instant,

@@ -10,7 +10,9 @@ public sealed class ProtectionHealthSnapshot
     public bool DetectorReady { get; init; }
     public bool OverlayActive { get; init; }
     public bool AudioActive { get; init; }
+    public bool ClipActive { get; init; }
     public string AudioStatus { get; init; } = "Idle";
+    public string? ActiveSkipMatchInfo { get; init; }
     public long LastFrameAtMs { get; init; }
     public string LastError { get; init; } = "";
     public int ActiveBlurBoxCount { get; init; }
@@ -18,9 +20,9 @@ public sealed class ProtectionHealthSnapshot
 
 /// <summary>
 /// Continuous low-CPU system-wide screen scanner:
-/// - Skips scanning when workstation is locked or monitor power is off
-/// - Uses 14x14 screen-diff hash excluding active blur boxes before running ONNX
-/// - Runs NudeNet + PordaV4x3 + SwiftFormer concurrently with adaptive tiling & box smoothing
+/// - Skips scanning when workstation is locked
+/// - Hybrid Community/Custom Timestamp Skip via Windows GSMSC + CleanStream
+/// - Concurrent NudeNet + PordaV4x3 + SwiftFormer + async MobileCLIP2-S0 + WASAPI YAMNet audio
 /// </summary>
 public sealed class ScreenScannerService : IDisposable
 {
@@ -29,8 +31,10 @@ public sealed class ScreenScannerService : IDisposable
     private readonly NudeNetOnnxDetector _nudeDetector;
     private readonly GenderPersonOnnxDetector _genderDetector;
     private readonly IntimateSceneOnnxDetector _sceneDetector;
+    private readonly MobileClipIntimateOnnxDetector? _clipDetector;
     private readonly WasapiAudioMonitor _audioMonitor;
     private readonly ContextExitController _exitController;
+    private readonly CommunitySkipRepository _skipRepo = new();
 
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
@@ -43,9 +47,24 @@ public sealed class ScreenScannerService : IDisposable
     private IReadOnlyList<BoundingBox> _activeBlurBoxes = [];
     private int _consecutiveIntimateHits;
     private int _consecutiveAudioHits;
+    private int _cleanFramesSinceSkip;
     private long _lastAudioScoredMs;
     private AudioIntimateResult _lastAudioResult = new(0f, "", 0f, false);
     private string _lastForegroundProc = "";
+
+    private SceneSafetyScores? _lastSceneSafety;
+    private ClipIntimateScore? _lastClipScore;
+    private long _lastClipScoredMs;
+    private long _lastEvaluatedClipMs;
+    private long _lastClipLaunchMs;
+    private volatile bool _staticClipEvaluated;
+    private int _clipInferenceInFlight;
+    private int _clipGeneration;
+
+    private long _lastCommunityJumpMs;
+    private string _lastSkippedSegmentKey = "";
+    private string? _lastPublishedSkipInfo;
+    private volatile bool _hasTimestampMatchActive;
 
     private sealed class TrackedBox
     {
@@ -64,16 +83,19 @@ public sealed class ScreenScannerService : IDisposable
         GenderPersonOnnxDetector genderDetector,
         IntimateSceneOnnxDetector sceneDetector,
         WasapiAudioMonitor audioMonitor,
-        ContextExitController exitController)
+        ContextExitController exitController,
+        MobileClipIntimateOnnxDetector? clipDetector = null)
     {
         _getConfig = getConfig;
         _overlay = overlay;
         _nudeDetector = nudeDetector;
         _genderDetector = genderDetector;
         _sceneDetector = sceneDetector;
+        _clipDetector = clipDetector;
         _audioMonitor = audioMonitor;
         _exitController = exitController;
 
+        _skipRepo.UpdateCustomEntries(getConfig().CustomSkipEntries);
         _audioMonitor.ResultScored += OnAudioResult;
     }
 
@@ -93,6 +115,12 @@ public sealed class ScreenScannerService : IDisposable
     {
         var cfg = _getConfig();
         _overlay.SetStyleAndOpacity(cfg.BlurStyle, cfg.BlurOpacity);
+        _skipRepo.UpdateCustomEntries(cfg.CustomSkipEntries);
+
+        if (!cfg.CommunitySkipEnabled)
+        {
+            PublishSkipInfo(null, activeMatch: false);
+        }
 
         if (!cfg.ProtectionEnabled)
         {
@@ -101,6 +129,7 @@ public sealed class ScreenScannerService : IDisposable
             _lastSignature = null;
             _overlay.ClearBlurRegions();
             _audioMonitor.Stop();
+            PublishSkipInfo(null, activeMatch: false);
             return;
         }
 
@@ -117,7 +146,8 @@ public sealed class ScreenScannerService : IDisposable
     private void OnAudioResult(AudioIntimateResult result)
     {
         _lastAudioResult = result;
-        _lastAudioScoredMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _lastAudioScoredMs = now;
 
         var cfg = _getConfig();
         if (!cfg.ProtectionEnabled || !cfg.IntimateGuardEnabled || (!cfg.IntimateAudioEnabled && !cfg.AutoMovieAudioEnabled))
@@ -127,24 +157,66 @@ public sealed class ScreenScannerService : IDisposable
         if (IsSelfOrIgnoredProcess(_lastForegroundProc))
             return;
 
+        // Visual-first audio policy: audio cannot trigger on a clearly safe scene
+        var freshClip = Volatile.Read(ref _lastClipScoredMs) is long cs && now - cs < 2500 ? Volatile.Read(ref _lastClipScore) : null;
+        var freshSafety = now - _lastFullInferenceMs < 2500 ? _lastSceneSafety : null;
+        bool hasFreshVisual = freshClip != null || freshSafety != null;
+        bool visualUnclear = IntimateSceneRules.IsVisualUnclearForAudio(
+            sceneSafety: freshSafety,
+            hasSemiNude: _activeBlurBoxes.Count > 0,
+            kissOrBedCue: false,
+            clipKissProb: freshClip?.IntimateProb ?? 0f,
+            clipMargin: freshClip?.Margin ?? 0f,
+            hasFreshVisual: hasFreshVisual);
+        if (!visualUnclear)
+        {
+            _consecutiveAudioHits = 0;
+            return;
+        }
+
+        bool postSkipWindow = _exitController.ConsecutiveSkipsOnSameVideo is >= 1 and <= 11 &&
+            now - _exitController.LastActionMs <= 5500;
+        int requiredAudioHits = postSkipWindow ? 2 : 3;
+
         if (result.Score >= 0.55f && !string.IsNullOrWhiteSpace(result.TopLabel))
         {
             _consecutiveAudioHits++;
-            if (_consecutiveAudioHits >= 3)
+            if (_consecutiveAudioHits >= requiredAudioHits)
             {
                 _consecutiveAudioHits = 0;
-                _exitController.TriggerIntimateAction(new IntimateSignals(
-                    Triggered: true,
-                    Instant: true,
-                    Reason: $"Intimate Audio ({result.TopLabel})",
-                    Confidence: result.Score,
-                    IsKissOrBedCue: false));
+                _exitController.TriggerIntimateAction(
+                    new IntimateSignals(
+                        Triggered: true,
+                        Instant: true,
+                        Reason: $"Intimate Audio ({result.TopLabel})",
+                        Confidence: result.Score,
+                        IsKissOrBedCue: false),
+                    onResetAfterAction: ResetPostActionWindows);
             }
         }
         else
         {
             _consecutiveAudioHits = 0;
         }
+    }
+
+    private void ResetPostActionWindows()
+    {
+        _audioMonitor.ResetWindow();
+        _trackedBoxes.Clear();
+        _activeBlurBoxes = [];
+        _lastSignature = null;
+        _staticClipEvaluated = false;
+        Interlocked.Increment(ref _clipGeneration);
+        Volatile.Write(ref _lastClipScore, null);
+        Volatile.Write(ref _lastClipScoredMs, 0L);
+        _lastEvaluatedClipMs = 0L;
+        _lastClipLaunchMs = 0L;
+        _lastSceneSafety = null;
+        _lastAudioScoredMs = 0L;
+        _consecutiveIntimateHits = 0;
+        _consecutiveAudioHits = 0;
+        _cleanFramesSinceSkip = 0;
     }
 
     private async Task ScanLoopAsync(CancellationToken ct)
@@ -180,16 +252,13 @@ public sealed class ScreenScannerService : IDisposable
                     continue;
                 }
 
-                string fgProc = GetForegroundProcessName();
+                var (hwnd, fgProc, fgTitle, isFullscreen) = ContextExitController.CaptureForegroundWindowInfo();
                 if (!string.IsNullOrEmpty(fgProc) && fgProc != _lastForegroundProc)
                 {
                     if (!string.IsNullOrEmpty(_lastForegroundProc))
                     {
-                        _trackedBoxes.Clear();
-                        _activeBlurBoxes = [];
-                        _lastSignature = null;
-                        _consecutiveIntimateHits = 0;
-                        _consecutiveAudioHits = 0;
+                        ResetPostActionWindows();
+                        _exitController.ResetVideoSkipStreak();
                         _overlay.ClearBlurRegions();
                     }
                     _lastForegroundProc = fgProc;
@@ -208,13 +277,24 @@ public sealed class ScreenScannerService : IDisposable
                     continue;
                 }
 
-                await PerformScanPassAsync(cfg, fgProc);
+                bool jumpedByTimestamp = await TryHandleCommunityTimestampSkipAsync(cfg, hwnd, fgProc, fgTitle, isFullscreen);
+                if (!jumpedByTimestamp)
+                {
+                    await PerformScanPassAsync(cfg, hwnd, fgProc, fgTitle, isFullscreen);
+                }
 
-                int delayMs = _lastScreenIsStatic
-                    ? 850
-                    : _activeBlurBoxes.Count > 0
-                        ? Math.Clamp(cfg.ScanIntervalMs, 220, 320)
-                        : Math.Clamp(cfg.ScanIntervalMs, 260, 400);
+                long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                bool verifyingPostSkip = _exitController.ConsecutiveSkipsOnSameVideo is >= 1 and <= 11 &&
+                    nowMs - _exitController.LastActionMs <= 5500;
+                int delayMs = verifyingPostSkip
+                    ? 140
+                    : _hasTimestampMatchActive
+                        ? Math.Clamp(cfg.ScanIntervalMs, 220, 300)
+                        : _lastScreenIsStatic
+                            ? 850
+                            : _activeBlurBoxes.Count > 0
+                                ? Math.Clamp(cfg.ScanIntervalMs, 220, 320)
+                                : Math.Clamp(cfg.ScanIntervalMs, 260, 400);
                 await Task.Delay(delayMs, ct);
             }
             catch (OperationCanceledException)
@@ -229,7 +309,86 @@ public sealed class ScreenScannerService : IDisposable
         }
     }
 
-    private async Task PerformScanPassAsync(AppConfig cfg, string fgProc)
+    private async Task<bool> TryHandleCommunityTimestampSkipAsync(
+        AppConfig cfg,
+        IntPtr hwnd,
+        string procName,
+        string windowTitle,
+        bool isFullscreen)
+    {
+        if (!cfg.ProtectionEnabled || !cfg.IntimateGuardEnabled || !cfg.CommunitySkipEnabled)
+        {
+            PublishSkipInfo(null, activeMatch: false);
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(procName) || IsSelfOrIgnoredProcess(procName))
+        {
+            PublishSkipInfo(null, activeMatch: false);
+            return false;
+        }
+
+        var mediaCtx = IntimateExitRules.ClassifyDesktopContext(procName, windowTitle, null, isFullscreen);
+        if (mediaCtx != MediaAppContext.MovieSeriesPlayer &&
+            IntimateExitRules.DetectDrmTarget(procName, windowTitle, null) == null)
+        {
+            PublishSkipInfo(null, activeMatch: false);
+            return false;
+        }
+
+        var snap = await WindowsMediaSessionBridge.GetActivePlaybackSnapshotAsync(procName, windowTitle);
+        if (snap == null || string.IsNullOrWhiteSpace(snap.Title))
+        {
+            PublishSkipInfo(null, activeMatch: false);
+            return false;
+        }
+
+        var lookup = _skipRepo.ResolveNonBlocking(snap.Title, snap.Subtitle);
+        switch (lookup)
+        {
+            case SkipLookupState.Found found:
+                PublishSkipInfo($"{found.SourceLabel}: {found.DisplayTitle} ({found.Segments.Count} skips)", activeMatch: true);
+                if (snap.PositionMs < 0L || _exitController.IsActionInProgress) return false;
+
+                var match = CommunitySkipRules.FindActiveSkipWindow(snap.PositionMs, found.Segments);
+                if (match == null) return false;
+
+                string segKey = $"{found.CacheKey}:{match.Segment.StartMs}:{match.Segment.EndMs}";
+                long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                bool sameSegCooldown = segKey == _lastSkippedSegmentKey && now - _lastCommunityJumpMs < 8000;
+                if (sameSegCooldown || now - _lastCommunityJumpMs < 2500 || now - _exitController.LastActionMs < 1400)
+                {
+                    return false;
+                }
+
+                if (_exitController.TryTriggerTimestampSkip(snap, found, match, hwnd, procName, windowTitle, ResetPostActionWindows))
+                {
+                    _lastSkippedSegmentKey = segKey;
+                    _lastCommunityJumpMs = now;
+                    return true;
+                }
+                return false;
+
+            case SkipLookupState.Loading loading:
+                PublishSkipInfo($"Checking timestamps: {loading.NormalizedTitle}...", activeMatch: false);
+                return false;
+
+            case SkipLookupState.NotFound nf:
+                PublishSkipInfo($"AI Fallback: {nf.NormalizedTitle}", activeMatch: false);
+                return false;
+
+            default:
+                PublishSkipInfo(null, activeMatch: false);
+                return false;
+        }
+    }
+
+    private void PublishSkipInfo(string? info, bool activeMatch)
+    {
+        _hasTimestampMatchActive = activeMatch;
+        _lastPublishedSkipInfo = info;
+    }
+
+    private async Task PerformScanPassAsync(AppConfig cfg, IntPtr hwnd, string fgProc, string fgTitle, bool isFullscreen)
     {
         var vs = SystemInformation.VirtualScreen;
         if (vs.Width <= 0 || vs.Height <= 0) return;
@@ -251,9 +410,15 @@ public sealed class ScreenScannerService : IDisposable
 
         int[] sig = ComputeScreenSignature(sampler, localExcluded);
         var (isStatic, isSceneCut) = AnalyzeScreenChange(_lastSignature, sig);
+        var activeContext = IntimateExitRules.ClassifyDesktopContext(fgProc, fgTitle, null, isFullscreen);
+        bool isActiveVideoPlayback = activeContext == MediaAppContext.MovieSeriesPlayer;
         _lastScreenIsStatic = isStatic;
+        if (!isStatic || isSceneCut)
+        {
+            _staticClipEvaluated = false;
+        }
 
-        if (isStatic && (now - _lastFullInferenceMs < 2500))
+        if (isStatic && !isActiveVideoPlayback && (now - _lastFullInferenceMs < 2500))
         {
             PublishHealth(_activeBlurBoxes.Count);
             return;
@@ -265,7 +430,8 @@ public sealed class ScreenScannerService : IDisposable
 
         bool runTiles = isSceneCut || (_changedFrameCounter++ % 3 == 0);
         bool recentAudioActive = (now - _lastAudioScoredMs < 2000) && _lastAudioResult.Score >= 0.25f;
-        bool runSceneClassifier = cfg.IntimateGuardEnabled && (!isStatic || _activeBlurBoxes.Count > 0 || recentAudioActive);
+        bool runSceneClassifier = cfg.IntimateGuardEnabled &&
+            (!isStatic || isActiveVideoPlayback || _activeBlurBoxes.Count > 0 || recentAudioActive);
 
         var nudeTask = Task.Run(() => _nudeDetector.Detect(bmp, sampler, includeQuadrants: runTiles));
         var genderTask = Task.Run(() => _genderDetector.Detect(bmp, includeTiles: runTiles));
@@ -275,6 +441,7 @@ public sealed class ScreenScannerService : IDisposable
         var detections = nudeTask.Result;
         var personBoxes = genderTask.Result;
         var sceneSafety = sceneTask.Result;
+        if (sceneSafety != null) _lastSceneSafety = sceneSafety;
 
         if (_lastGenderFilter != null && _lastGenderFilter != cfg.GenderFilter)
         {
@@ -334,25 +501,109 @@ public sealed class ScreenScannerService : IDisposable
 
         if (cfg.IntimateGuardEnabled && !IsSelfOrIgnoredProcess(fgProc) && !_exitController.IsActionInProgress)
         {
+            bool isSocialFeedBrowse = IntimateExitRules.IsSocialFeedBrowse(fgProc, fgTitle, null, isFullscreen);
+            if (_clipDetector != null &&
+                (!isStatic || (isActiveVideoPlayback && !_staticClipEvaluated)) &&
+                !isSocialFeedBrowse &&
+                (activeContext != MediaAppContext.BrowserOrGeneral || isFullscreen) &&
+                now - _lastClipLaunchMs >= 400 &&
+                Interlocked.CompareExchange(ref _clipInferenceInFlight, 1, 0) == 0)
+            {
+                if (isStatic) _staticClipEvaluated = true;
+                _lastClipLaunchMs = now;
+                int launchGen = Volatile.Read(ref _clipGeneration);
+                var focusBoxes = filtered.Faces.Count > 0
+                    ? filtered.Faces.Select(f => f.Box).ToList()
+                    : personBoxes.Select(p => p.Box).ToList();
+                var clipCrop = ModelPathLocator.CreateCenterSquareClipCrop(bmp, focusBoxes);
+                if (clipCrop != null)
+                {
+                    _ = Task.Run(() =>
+                    {
+                        try
+                        {
+                            var score = _clipDetector.Classify(clipCrop);
+                            if (score != null && Volatile.Read(ref _clipGeneration) == launchGen)
+                            {
+                                Volatile.Write(ref _lastClipScore, score);
+                                Volatile.Write(ref _lastClipScoredMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                            }
+                        }
+                        finally
+                        {
+                            clipCrop.Dispose();
+                            Volatile.Write(ref _clipInferenceInFlight, 0);
+                        }
+                    });
+                }
+                else
+                {
+                    Volatile.Write(ref _clipInferenceInFlight, 0);
+                }
+            }
+
             bool audioActive = cfg.IntimateAudioEnabled || (cfg.AutoMovieAudioEnabled && _audioMonitor.IsCapturing);
             float audioScore = (now - _lastAudioScoredMs < 2000 && audioActive) ? _lastAudioResult.Score : 0f;
             string audioLabel = (now - _lastAudioScoredMs < 2000 && audioActive) ? _lastAudioResult.TopLabel : "";
-            var signals = IntimateSceneRules.Evaluate(
-                detections, personBoxes, sceneSafety, audioScore, audioLabel, bmp.Width, bmp.Height, cfg.Sensitivity);
+            var evalSafety = sceneSafety ?? ((!isStatic && !isActiveVideoPlayback) ? null : _lastSceneSafety);
+            long clipScoredAt = Volatile.Read(ref _lastClipScoredMs);
+            var freshClip = !isSocialFeedBrowse && now - clipScoredAt < 2200 ? Volatile.Read(ref _lastClipScore) : null;
+            bool hasFreshVisual = evalSafety != null || freshClip != null;
+            bool continuingIntimateScene = isActiveVideoPlayback &&
+                _exitController.ConsecutiveSkipsOnSameVideo is >= 1 and <= 11 &&
+                (now - _exitController.LastActionMs <= 5500);
+
+            var rawSignals = IntimateSceneRules.Evaluate(
+                detections: detections,
+                personBoxes: personBoxes,
+                sceneSafety: evalSafety,
+                audioScore: audioScore,
+                audioLabel: audioLabel,
+                screenW: bmp.Width,
+                screenH: bmp.Height,
+                sensitivity: cfg.Sensitivity,
+                clipKissProb: freshClip?.IntimateProb ?? 0f,
+                clipMargin: freshClip?.Margin ?? 0f,
+                allowDarkClipFallback: isActiveVideoPlayback,
+                continuingIntimateScene: continuingIntimateScene,
+                hasFreshVisualOverride: hasFreshVisual);
+
+            var signals = isSocialFeedBrowse && rawSignals.Triggered &&
+                !rawSignals.Reason.Contains("Explicit", StringComparison.OrdinalIgnoreCase)
+                ? rawSignals with { Triggered = false, Instant = false }
+                : rawSignals;
 
             if (signals.Triggered)
             {
-                _consecutiveIntimateHits++;
-                int needed = signals.Instant ? 1 : 2;
-                if (_consecutiveIntimateHits >= needed)
+                bool isClipTrigger = signals.Reason.Contains("CLIP", StringComparison.Ordinal);
+                bool isDuplicateClipSample = !signals.Instant && isClipTrigger && freshClip != null && clipScoredAt == _lastEvaluatedClipMs;
+                if (!isDuplicateClipSample)
                 {
-                    _consecutiveIntimateHits = 0;
-                    _exitController.TriggerIntimateAction(signals);
+                    if (isClipTrigger && freshClip != null) _lastEvaluatedClipMs = clipScoredAt;
+                    _consecutiveIntimateHits++;
+                    int needed = signals.Instant ? 1 : 2;
+                    if (_consecutiveIntimateHits >= needed && now - _exitController.LastActionMs >= 1400)
+                    {
+                        _consecutiveIntimateHits = 0;
+                        _cleanFramesSinceSkip = 0;
+                        _exitController.TriggerIntimateAction(signals, onResetAfterAction: ResetPostActionWindows);
+                    }
                 }
             }
             else
             {
-                _consecutiveIntimateHits = 0;
+                _consecutiveIntimateHits = Math.Max(0, _consecutiveIntimateHits - 1);
+                if (_exitController.ConsecutiveSkipsOnSameVideo > 0 &&
+                    (freshClip != null || (!isActiveVideoPlayback && sceneSafety != null)))
+                {
+                    _cleanFramesSinceSkip++;
+                }
+                if ((_cleanFramesSinceSkip >= 2 && now - _exitController.LastActionMs >= 1800) ||
+                    now - _exitController.LastActionMs >= 6000)
+                {
+                    _exitController.ResetVideoSkipStreak();
+                    _cleanFramesSinceSkip = 0;
+                }
             }
         }
 
@@ -457,7 +708,7 @@ public sealed class ScreenScannerService : IDisposable
                     (clamped.Width < t.Box.Width * 0.85f || clamped.Height < t.Box.Height * 0.85f);
                 if (!withinDeadband && !isOccludedShrink)
                 {
-                    float alpha = isStaticScreen ? 0.30f : 0.65f;
+                    float alpha = isStaticScreen ? 0.45f : isSceneCut ? 1.0f : 0.85f;
                     float cx = t.Box.CenterX * (1f - alpha) + clamped.CenterX * alpha;
                     float cy = t.Box.CenterY * (1f - alpha) + clamped.CenterY * alpha;
                     float w = t.Box.Width * (1f - alpha) + clamped.Width * alpha;
@@ -531,23 +782,11 @@ public sealed class ScreenScannerService : IDisposable
             int diff = Math.Abs(((c1 >> 16) & 0xFF) - ((c2 >> 16) & 0xFF)) +
                        Math.Abs(((c1 >> 8) & 0xFF) - ((c2 >> 8) & 0xFF)) +
                        Math.Abs((c1 & 0xFF) - (c2 & 0xFF));
-            if (diff < 36) matches++;
+            if (diff < 18) matches++;
         }
         if (valid < 8) return (true, false);
         float rate = (float)matches / valid;
-        return (rate >= 0.88f, rate < 0.30f);
-    }
-
-    private static string GetForegroundProcessName()
-    {
-        try
-        {
-            IntPtr hwnd = NativeMethods.GetForegroundWindow();
-            if (hwnd == IntPtr.Zero) return "";
-            NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
-            return Process.GetProcessById((int)pid).ProcessName.ToLowerInvariant();
-        }
-        catch { return ""; }
+        return (rate >= 0.96f, rate < 0.30f);
     }
 
     private static bool IsSelfOrIgnoredProcess(string proc)
@@ -565,7 +804,9 @@ public sealed class ScreenScannerService : IDisposable
             DetectorReady = true,
             OverlayActive = _overlay.IsOverlayActive,
             AudioActive = _audioMonitor.IsCapturing,
+            ClipActive = _clipDetector != null,
             AudioStatus = _audioMonitor.StatusMessage,
+            ActiveSkipMatchInfo = _lastPublishedSkipInfo,
             LastFrameAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             LastError = err,
             ActiveBlurBoxCount = activeBoxes

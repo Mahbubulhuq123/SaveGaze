@@ -136,8 +136,8 @@ public static class GenderPersonDecoder
                 bool candInsideExisting =
                     cand.Box.CenterX >= existing.Box.X1 && cand.Box.CenterX <= existing.Box.X2 &&
                     cand.Box.CenterY >= existing.Box.Y1 && cand.Box.CenterY <= existing.Box.Y2 &&
-                    existing.Confidence >= cand.Confidence * 1.25f;
-                return iou > 0.28f || candInsideExisting;
+                    existing.Confidence >= cand.Confidence * 1.35f;
+                return iou > 0.42f || candInsideExisting;
             });
             if (!suppressed)
             {

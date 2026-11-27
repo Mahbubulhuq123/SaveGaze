@@ -23,6 +23,8 @@ public sealed class ContextExitController
     private string _lastVideoKey = "";
 
     public bool IsActionInProgress => Volatile.Read(ref _actionInProgress) == 1;
+    public long LastActionMs => Interlocked.Read(ref _lastActionMs);
+    public int ConsecutiveSkipsOnSameVideo => Volatile.Read(ref _consecutiveSkipsOnSameVideo);
 
     public ContextExitController(
         Func<AppConfig> getConfig,
@@ -36,14 +38,17 @@ public sealed class ContextExitController
 
     public void ResetVideoSkipStreak()
     {
-        _consecutiveSkipsOnSameVideo = 0;
+        Volatile.Write(ref _consecutiveSkipsOnSameVideo, 0);
         _lastVideoKey = "";
     }
 
-    public void TriggerIntimateAction(IntimateSignals signals, string? knownUrl = null)
+    public void TriggerIntimateAction(
+        IntimateSignals signals,
+        string? knownUrl = null,
+        Action? onResetAfterAction = null)
     {
         long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        if (now - _lastActionMs < 2200) return;
+        if (now - LastActionMs < 1400) return;
         if (Interlocked.CompareExchange(ref _actionInProgress, 1, 0) != 0) return;
 
         var (hwnd, procName, title, isFullscreen) = CaptureForegroundWindowInfo();
@@ -51,12 +56,12 @@ public sealed class ContextExitController
         if (!string.Equals(videoKey, _lastVideoKey, StringComparison.Ordinal))
         {
             _lastVideoKey = videoKey;
-            _consecutiveSkipsOnSameVideo = 0;
+            Volatile.Write(ref _consecutiveSkipsOnSameVideo, 0);
         }
 
         var cfg = _getConfig();
         var mediaContext = IntimateExitRules.ClassifyDesktopContext(procName, title, knownUrl, isFullscreen);
-        var action = IntimateExitRules.ChooseAction(mediaContext, cfg.IntimateActionMode, _consecutiveSkipsOnSameVideo);
+        var action = IntimateExitRules.ChooseAction(mediaContext, cfg.IntimateActionMode, ConsecutiveSkipsOnSameVideo);
 
         string actionDetail = action switch
         {
@@ -65,7 +70,6 @@ public sealed class ContextExitController
             _ => "Blurring first & closing / pausing media..."
         };
 
-        // Step 1: BLUR FIRST immediately across entire virtual screen
         var vs = SystemInformation.VirtualScreen;
         _overlay.ShowIntimateShield(signals.Reason, actionDetail);
         _overlay.UpdateBlurRegions(
@@ -77,33 +81,26 @@ public sealed class ContextExitController
         {
             try
             {
-                await Task.Delay(260);
+                await Task.Delay(240);
                 if (hwnd != IntPtr.Zero) NativeMethods.SetForegroundWindow(hwnd);
                 await Task.Delay(60);
 
                 switch (action)
                 {
                     case ExitActionType.NextReelSwipe:
-                        _consecutiveSkipsOnSameVideo++;
+                        Interlocked.Increment(ref _consecutiveSkipsOnSameVideo);
                         NativeMethods.SendKey(NativeMethods.VK_DOWN, extended: true);
                         await Task.Delay(780);
                         break;
 
                     case ExitActionType.SkipSceneForward:
-                        _consecutiveSkipsOnSameVideo++;
-                        // Right arrow seeks forward in VLC/Stremio/Nuvio/YouTube/HTML5; 'L' seeks +10s in YouTube
-                        NativeMethods.SendKey(NativeMethods.VK_RIGHT, extended: true);
-                        if (ContentGuardLists.DesktopBrowserProcesses.Contains(procName) &&
-                            title.Contains("youtube", StringComparison.OrdinalIgnoreCase))
-                        {
-                            await Task.Delay(60);
-                            NativeMethods.SendKey(NativeMethods.VK_L);
-                        }
-                        await Task.Delay(1150);
+                        Interlocked.Increment(ref _consecutiveSkipsOnSameVideo);
+                        DispatchForwardSeek(procName, title);
+                        await Task.Delay(950);
                         break;
 
                     case ExitActionType.PauseAndBack:
-                        _consecutiveSkipsOnSameVideo = 0;
+                        Volatile.Write(ref _consecutiveSkipsOnSameVideo, 0);
                         ExecutePauseAndExit(procName, isFullscreen);
                         _overlay.ShowBlockBanner("Exited Intimate Scene", signals.Reason);
                         await Task.Delay(700);
@@ -115,10 +112,81 @@ public sealed class ContextExitController
             {
                 _overlay.ClearBlurRegions();
                 _overlay.HideIntimateShield();
-                _lastActionMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                onResetAfterAction?.Invoke();
+                await Task.Delay(200);
+                Interlocked.Exchange(ref _lastActionMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 Volatile.Write(ref _actionInProgress, 0);
             }
         });
+    }
+
+    public bool TryTriggerTimestampSkip(
+        PlaybackSnapshot snap,
+        SkipLookupState.Found lookup,
+        MatchedSkipWindow match,
+        IntPtr hwnd,
+        string procName,
+        string windowTitle,
+        Action? onResetAfterAction = null)
+    {
+        if (Interlocked.CompareExchange(ref _actionInProgress, 1, 0) != 0) return false;
+
+        string startStr = CommunitySkipRules.FormatMs(match.Segment.StartMs);
+        string endStr = CommunitySkipRules.FormatMs(match.Segment.EndMs);
+        string reason = $"{lookup.SourceLabel} Skip ({startStr} -> {endStr})";
+
+        var vs = SystemInformation.VirtualScreen;
+        _overlay.ShowIntimateShield(reason, $"Jumping past {lookup.DisplayTitle} scene...");
+        _overlay.UpdateBlurRegions(
+            [new BoundingBox(vs.Left, vs.Top, vs.Right, vs.Bottom)],
+            []);
+        _onAuditLog?.Invoke(reason, $"{lookup.DisplayTitle} in {procName}");
+
+        Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(160);
+                bool sought = await WindowsMediaSessionBridge.SeekActivePlaybackAsync(procName, match.TargetEndMs);
+                await Task.Delay(550);
+
+                var after = await WindowsMediaSessionBridge.GetActivePlaybackSnapshotAsync(procName, windowTitle);
+                bool moved = sought && after != null && (
+                    after.PositionMs >= match.Segment.StartMs + 2000L ||
+                    Math.Abs(after.PositionMs - match.TargetEndMs) <= 4500L);
+
+                if (!moved && IntimateExitRules.DetectDrmTarget(procName, windowTitle, null) == null)
+                {
+                    if (hwnd != IntPtr.Zero) NativeMethods.SetForegroundWindow(hwnd);
+                    await Task.Delay(60);
+                    DispatchForwardSeek(procName, windowTitle);
+                    await Task.Delay(950);
+                }
+            }
+            catch { }
+            finally
+            {
+                _overlay.ClearBlurRegions();
+                _overlay.HideIntimateShield();
+                onResetAfterAction?.Invoke();
+                await Task.Delay(200);
+                Interlocked.Exchange(ref _lastActionMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                Volatile.Write(ref _actionInProgress, 0);
+            }
+        });
+
+        return true;
+    }
+
+    private static void DispatchForwardSeek(string procName, string title)
+    {
+        NativeMethods.SendKey(NativeMethods.VK_RIGHT, extended: true);
+        if (ContentGuardLists.DesktopBrowserProcesses.Contains(procName) &&
+            title.Contains("youtube", StringComparison.OrdinalIgnoreCase))
+        {
+            Thread.Sleep(60);
+            NativeMethods.SendKey(NativeMethods.VK_L);
+        }
     }
 
     private static void ExecutePauseAndExit(string procName, bool isFullscreen)

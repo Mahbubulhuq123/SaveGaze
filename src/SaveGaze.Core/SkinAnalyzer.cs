@@ -63,10 +63,8 @@ public static class SkinAnalyzer
             for (int x = left; x < right; x += stepX)
             {
                 var (r, g, b) = frame.GetRgb(x, y);
-                bool isRedOnion = r is >= 110 and <= 220 && g is >= 20 and <= 85 && b is >= 20 and <= 95 && (r - g) > 65;
-                if (isRedOnion) onionCount++;
-
-                if (!isRedOnion && IsSkinPixel(r, g, b))
+                if (IsRedOnionPixel(r, g, b)) onionCount++;
+                if (IsSkinPixel(r, g, b))
                 {
                     skinCount++;
                 }
@@ -105,8 +103,7 @@ public static class SkinAnalyzer
             for (int x = left; x < right; x += stepX)
             {
                 var (r, g, b) = frame.GetRgb(x, y);
-                bool isRedOnion = r is >= 110 and <= 220 && g is >= 20 and <= 85 && b is >= 20 and <= 95 && (r - g) > 65;
-                if (!isRedOnion && IsSkinPixel(r, g, b))
+                if (IsSkinPixel(r, g, b))
                 {
                     skinCount++;
                 }
@@ -117,22 +114,55 @@ public static class SkinAnalyzer
         return totalSampled == 0 ? 0f : (float)skinCount / totalSampled;
     }
 
+    private static bool IsRedOnionPixel(byte r, byte g, byte b) =>
+        r is >= 110 and <= 220 && g is >= 20 and <= 85 && b is >= 20 and <= 95 && (r - g) > 65;
+
     private static bool IsSkinPixel(byte r, byte g, byte b)
     {
+        if (IsRedOnionPixel(r, g, b)) return false;
+        int maxC = Math.Max(r, Math.Max(g, b));
+        int minC = Math.Min(r, Math.Min(g, b));
+        int chroma = maxC - minC;
+        if (chroma < 12) return false;
+
         int cb = (int)(-0.1687f * r - 0.3313f * g + 0.5000f * b + 128f);
         int cr = (int)(0.5000f * r - 0.4187f * g - 0.0813f * b + 128f);
 
-        bool isWarmSkin = r > 40 && g > 25 && b > 15 &&
-            r > g && (r > b || (g - b) is >= -15 and <= 30) &&
-            cb is >= 68 and <= 142 &&
-            cr is >= 126 and <= 180;
+        bool isWarmSkin = r > 32 && g > 20 && b > 14 &&
+            chroma >= 14 &&
+            r > g && r > b && (r - g) >= 6 &&
+            cb is >= 74 and <= 132 &&
+            cr is >= 131 and <= 178;
 
-        bool isCoolSkin = r > 35 && g > 25 && b > 25 &&
-            cb is >= 75 and <= 165 &&
-            cr is >= 115 and <= 172 &&
-            r >= g * 0.80f;
+        bool isCoolSkin = r > 32 && g > 20 && b > 20 &&
+            chroma >= 14 &&
+            cb is >= 82 and <= 156 &&
+            cr is >= 122 and <= 170 &&
+            r >= g * 0.88f &&
+            !(g > r + 8 && g > b + 8);
 
         return isWarmSkin || isCoolSkin;
+    }
+
+    public static float? ComputeMeanVisualLuma(this ISkinImageSampler frame)
+    {
+        if (frame.Width < 8 || frame.Height < 8) return null;
+        Span<float> lumas = stackalloc float[256];
+        int idx = 0;
+        float sum = 0f;
+        for (int r = 0; r < 16; r++)
+        {
+            int y = Math.Clamp(r * frame.Height / 16, 0, frame.Height - 1);
+            for (int c = 0; c < 16; c++)
+            {
+                int x = Math.Clamp(c * frame.Width / 16, 0, frame.Width - 1);
+                var (red, green, blue) = frame.GetRgb(x, y);
+                float luma = 0.299f * red + 0.587f * green + 0.114f * blue;
+                lumas[idx++] = luma;
+                sum += luma;
+            }
+        }
+        return MobileClipIntimateRules.HasVisualContent(lumas) ? sum / lumas.Length : null;
     }
 
     public static float FindMediaContainerBottom(

@@ -38,6 +38,17 @@ public sealed class OnnxModelSmokeTests
         for (int i = 0; i < waveform.Length; i++) waveform[i] = 0.05f * MathF.Sin(i * 0.1f);
         var audioRes = audio.ScoreWaveform(waveform, 0.035f);
         Assert.InRange(audioRes.Score, 0f, 1f);
+
+        using var clipBmp = new Bitmap(256, 256, PixelFormat.Format32bppArgb);
+        using (var cg = Graphics.FromImage(clipBmp))
+        {
+            cg.Clear(Color.FromArgb(40, 60, 90));
+            cg.FillRectangle(Brushes.Peru, 60, 50, 130, 140);
+        }
+        using var clip = new MobileClipIntimateOnnxDetector();
+        var clipScore = clip.Classify(clipBmp);
+        Assert.NotNull(clipScore);
+        Assert.InRange(clipScore!.IntimateProb, 0f, 1f);
     }
 
     [Fact]

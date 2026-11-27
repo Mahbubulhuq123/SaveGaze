@@ -2,6 +2,81 @@ using System.Text.RegularExpressions;
 
 namespace SaveGaze.Core;
 
+public static class MobileClipIntimateRules
+{
+    public static bool HasVisualContent(ReadOnlySpan<float> lumas)
+    {
+        if (lumas.Length == 0) return false;
+        double sum = 0.0;
+        for (int i = 0; i < lumas.Length; i++) sum += lumas[i];
+        double mean = sum / lumas.Length;
+        if (mean < 6.5) return false;
+
+        double varSum = 0.0;
+        for (int i = 0; i < lumas.Length; i++)
+        {
+            double d = lumas[i] - mean;
+            varSum += d * d;
+        }
+        return Math.Sqrt(varSum / lumas.Length) >= 5.0;
+    }
+
+    public static ClipIntimateScore Score(
+        float[] imageEmbedding,
+        float[][] promptEmbeddings,
+        int positiveCount,
+        float logitScale = 55f)
+    {
+        if (promptEmbeddings.Length == 0 || positiveCount <= 0 || positiveCount >= promptEmbeddings.Length)
+        {
+            return new ClipIntimateScore(0f, 0f, 0f, 0f);
+        }
+
+        float normSq = 0f;
+        for (int i = 0; i < imageEmbedding.Length; i++) normSq += imageEmbedding[i] * imageEmbedding[i];
+        float invNorm = normSq > 1e-8f ? 1f / MathF.Sqrt(normSq) : 1f;
+
+        var sims = new float[promptEmbeddings.Length];
+        float maxPos = float.NegativeInfinity;
+        float maxNeg = float.NegativeInfinity;
+        float maxAll = float.NegativeInfinity;
+
+        for (int i = 0; i < promptEmbeddings.Length; i++)
+        {
+            float[] p = promptEmbeddings[i];
+            int len = Math.Min(imageEmbedding.Length, p.Length);
+            float dot = 0f;
+            for (int k = 0; k < len; k++)
+            {
+                dot += (imageEmbedding[k] * invNorm) * p[k];
+            }
+            sims[i] = dot;
+            if (dot > maxAll) maxAll = dot;
+            if (i < positiveCount)
+            {
+                if (dot > maxPos) maxPos = dot;
+            }
+            else
+            {
+                if (dot > maxNeg) maxNeg = dot;
+            }
+        }
+
+        double sumPosExp = 0.0;
+        double sumNegExp = 0.0;
+        for (int i = 0; i < sims.Length; i++)
+        {
+            double e = Math.Exp(Math.Clamp((sims[i] - maxAll) * (double)logitScale, -40.0, 40.0));
+            if (i < positiveCount) sumPosExp += e;
+            else sumNegExp += e;
+        }
+        double total = sumPosExp + sumNegExp;
+        float prob = total > 0.0 ? (float)(sumPosExp / total) : 0f;
+
+        return new ClipIntimateScore(prob, maxPos - maxNeg, maxPos, maxNeg);
+    }
+}
+
 public static partial class IntimateSceneRules
 {
     private static readonly HashSet<NudeLabel> ExplicitNudityLabels =
@@ -72,7 +147,7 @@ public static partial class IntimateSceneRules
 
                     float unionW = Math.Max(p1.X2, p2.X2) - Math.Min(p1.X1, p2.X1);
                     float unionH = Math.Max(p1.Y2, p2.Y2) - Math.Min(p1.Y1, p2.Y1);
-                    bool horizontalBedPose = unionW >= unionH * 0.85f && Math.Max(p1.Height, p2.Height) >= screenH * 0.16f;
+                    bool horizontalBedPose = unionW >= unionH * 1.15f && Math.Max(p1.Height, p2.Height) >= screenH * 0.16f;
                     bool mixedGender = personBoxes[i].Gender != personBoxes[j].Gender;
                     if (horizontalBedPose && (mixedGender || iou >= 0.35f))
                     {
@@ -85,6 +160,23 @@ public static partial class IntimateSceneRules
         return false;
     }
 
+    public static bool IsVisualUnclearForAudio(
+        SceneSafetyScores? sceneSafety,
+        bool hasSemiNude,
+        bool kissOrBedCue,
+        float clipKissProb,
+        float clipMargin,
+        bool hasFreshVisual)
+    {
+        if (!hasFreshVisual) return true;
+        if (clipKissProb == 0f && clipMargin <= -0.15f) return true;
+        float nsfwProb = sceneSafety?.Nsfw ?? 0f;
+        return nsfwProb >= 0.18f ||
+               hasSemiNude ||
+               kissOrBedCue ||
+               (clipKissProb >= 0.48f && clipMargin >= -0.015f);
+    }
+
     public static IntimateSignals Evaluate(
         IReadOnlyList<Detection> detections,
         IReadOnlyList<PersonGenderBox> personBoxes,
@@ -93,8 +185,14 @@ public static partial class IntimateSceneRules
         string? audioLabel,
         float screenW,
         float screenH,
-        float sensitivity = 0.25f)
+        float sensitivity = 0.25f,
+        float clipKissProb = 0f,
+        float clipMargin = 0f,
+        bool allowDarkClipFallback = false,
+        bool continuingIntimateScene = false,
+        bool? hasFreshVisualOverride = null)
     {
+        bool hasFreshVisual = hasFreshVisualOverride ?? (sceneSafety != null || clipKissProb > 0f || clipMargin != 0f);
         float explicitThresh = Math.Clamp(sensitivity, 0.26f, 0.45f);
         bool hasExplicit = detections.Any(d => ExplicitNudityLabels.Contains(d.Label) && d.Confidence >= explicitThresh);
         bool highExplicit = detections.Any(d => ExplicitNudityLabels.Contains(d.Label) && d.Confidence >= 0.62f);
@@ -104,27 +202,64 @@ public static partial class IntimateSceneRules
         float nsfwProb = sceneSafety?.Nsfw ?? 0f;
         bool kissOrBedCue = HasCloseUpKissingOrEmbrace(faces, personBoxes, screenW, screenH);
 
-        if (hasExplicit && (nsfwProb >= 0.42f || highExplicit))
+        // 1. Explicit visual nudity confirmed by scene classifier or high NudeNet confidence
+        float explicitNsfwFloor = continuingIntimateScene ? 0.35f : 0.42f;
+        if (hasExplicit && (nsfwProb >= explicitNsfwFloor || highExplicit))
         {
             return new IntimateSignals(
                 Triggered: true,
-                Instant: highExplicit && nsfwProb >= 0.45f,
+                Instant: continuingIntimateScene || (highExplicit && nsfwProb >= 0.45f),
                 Reason: "Explicit Scene Detected",
                 Confidence: Math.Max(nsfwProb, 0.78f),
                 IsKissOrBedCue: kissOrBedCue);
         }
 
-        if (nsfwProb >= 0.82f)
+        // 2. Strong overall NSFW/suggestive frame (bed scenes, lingerie/partial nudity)
+        float nsfwSceneFloor = continuingIntimateScene ? 0.65f : 0.82f;
+        if (nsfwProb >= nsfwSceneFloor)
         {
             return new IntimateSignals(
                 Triggered: true,
-                Instant: nsfwProb >= 0.93f,
+                Instant: continuingIntimateScene || nsfwProb >= 0.93f,
                 Reason: "Intimate / NSFW Scene",
                 Confidence: nsfwProb,
                 IsKissOrBedCue: kissOrBedCue);
         }
 
-        if (kissOrBedCue && (nsfwProb >= 0.34f || (nsfwProb >= 0.18f && (hasSemiNude || audioScore >= 0.30f))))
+        // 3. MobileCLIP2-S0 clothed kissing / bed / romantic embrace detector
+        bool hasHumanCue = faces.Count > 0 || personBoxes.Count > 0 || hasSemiNude || nsfwProb >= 0.16f;
+        bool closePairClip = kissOrBedCue && clipKissProb >= 0.74f && clipMargin >= 0.023f;
+        bool humanBackedClip = hasHumanCue && clipKissProb >= 0.75f && clipMargin >= 0.025f;
+        bool darkMovieBedClip = allowDarkClipFallback && clipKissProb >= 0.82f && clipMargin >= 0.027f;
+        bool continueMovieClip = continuingIntimateScene && allowDarkClipFallback &&
+            ((kissOrBedCue && clipKissProb >= 0.74f && clipMargin >= 0.023f) ||
+             (clipKissProb >= 0.80f && clipMargin >= 0.026f));
+
+        if (closePairClip || humanBackedClip || darkMovieBedClip || continueMovieClip)
+        {
+            bool isInstantKiss = continueMovieClip || (allowDarkClipFallback
+                ? (closePairClip && clipKissProb >= 0.78f && clipMargin >= 0.028f) ||
+                  (humanBackedClip && clipKissProb >= 0.86f && clipMargin >= 0.038f) ||
+                  (darkMovieBedClip && clipKissProb >= 0.87f && clipMargin >= 0.038f)
+                : closePairClip && clipKissProb >= 0.80f && clipMargin >= 0.032f);
+
+            return new IntimateSignals(
+                Triggered: true,
+                Instant: isInstantKiss,
+                Reason: "Intimate Scene / Kissing (CLIP)",
+                Confidence: clipKissProb,
+                IsKissOrBedCue: true);
+        }
+
+        // 4. Kissing / bed pose must have real NSFW, semi-nude, or intimate audio support;
+        // never let noisy low SwiftFormer scores override a fresh safe CLIP score (prevents post-skip loops)
+        bool hasFreshClipScore = hasFreshVisual && (clipKissProb > 0f || clipMargin != 0f);
+        bool clipClearlySafe = hasFreshClipScore && (clipKissProb < 0.74f || clipMargin < 0.023f);
+        bool poseTriggered = clipClearlySafe
+            ? (nsfwProb >= 0.65f || (hasSemiNude && nsfwProb >= 0.42f))
+            : (nsfwProb >= 0.36f || (nsfwProb >= 0.24f && (hasSemiNude || audioScore >= 0.35f)));
+
+        if (kissOrBedCue && poseTriggered)
         {
             return new IntimateSignals(
                 Triggered: true,
@@ -134,12 +269,16 @@ public static partial class IntimateSceneRules
                 IsKissOrBedCue: true);
         }
 
+        // 5. Visual-first policy: audio triggers only when visual frame is unclear or borderline
         bool hasVocalLabel = !string.IsNullOrWhiteSpace(audioLabel);
-        if (hasVocalLabel && (audioScore >= 0.55f || (audioScore >= 0.35f && (nsfwProb >= 0.25f || hasSemiNude || kissOrBedCue))))
+        bool visualUnclear = IsVisualUnclearForAudio(
+            sceneSafety, hasSemiNude, kissOrBedCue, clipKissProb, clipMargin, hasFreshVisual);
+        if (hasVocalLabel && visualUnclear &&
+            (audioScore >= 0.55f || (audioScore >= 0.35f && (nsfwProb >= 0.25f || hasSemiNude || kissOrBedCue || continuingIntimateScene))))
         {
             return new IntimateSignals(
                 Triggered: true,
-                Instant: false,
+                Instant: continuingIntimateScene,
                 Reason: $"Intimate Audio ({audioLabel})",
                 Confidence: Math.Max(audioScore, nsfwProb),
                 IsKissOrBedCue: kissOrBedCue);
@@ -321,11 +460,29 @@ public static class IntimateExitRules
             MediaAppContext.ReelsShort => consecutiveSkipsOnSameVideo < 3
                 ? ExitActionType.NextReelSwipe
                 : ExitActionType.PauseAndBack,
-            MediaAppContext.MovieSeriesPlayer => consecutiveSkipsOnSameVideo < 2
-                ? ExitActionType.SkipSceneForward
-                : ExitActionType.PauseAndBack,
+            MediaAppContext.MovieSeriesPlayer => ExitActionType.SkipSceneForward,
             _ => ExitActionType.PauseAndBack
         };
+    }
+
+    public static bool IsSocialFeedBrowse(string processName, string windowTitle, string? urlText, bool isFullscreenWindow)
+    {
+        if (isFullscreenWindow) return false;
+        string proc = (processName ?? "").Trim().ToLowerInvariant();
+        if (!ContentGuardLists.DesktopBrowserProcesses.Contains(proc)) return false;
+
+        if (ClassifyDesktopContext(proc, windowTitle, urlText, isFullscreenWindow) != MediaAppContext.BrowserOrGeneral)
+        {
+            return false;
+        }
+
+        string combined = $"{windowTitle} {urlText}".ToLowerInvariant();
+        return combined.Contains("facebook.com") ||
+               combined.Contains("instagram.com") ||
+               combined.Contains("reddit.com") ||
+               combined.Contains("x.com") ||
+               combined.Contains("twitter.com") ||
+               combined.Contains("threads.net");
     }
 
     public static string? DetectDrmTarget(string processName, string windowTitle, string? urlText)

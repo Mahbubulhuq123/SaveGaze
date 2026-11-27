@@ -8,7 +8,7 @@
     nativeHost: "com.savegaze.host",
     passwordSaltPrefix: "contentguard_salt_2024:",
     legacyPasswordSaltSuffix: "contentguard_salt_2024",
-    version: "1.0.0",
+    version: "1.1.0",
     tagline: "On-device protection. Synced with SaveGaze PC — zero data leaves your device."
   };
   root.__saveGazeBrand = BRAND;

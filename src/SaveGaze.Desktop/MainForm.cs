@@ -14,6 +14,7 @@ public sealed class MainForm : Form
     private NudeNetOnnxDetector? _nudeDetector;
     private GenderPersonOnnxDetector? _genderDetector;
     private IntimateSceneOnnxDetector? _sceneDetector;
+    private MobileClipIntimateOnnxDetector? _clipDetector;
     private AudioIntimateOnnxDetector? _audioDetector;
     private WasapiAudioMonitor? _audioMonitor;
     private ScreenScannerService? _scanner;
@@ -34,6 +35,7 @@ public sealed class MainForm : Form
     private Label _lblHealthAi = null!;
     private Label _lblHealthOverlay = null!;
     private Label _lblHealthAudio = null!;
+    private Label _lblHealthSkip = null!;
     private Label _lblHealthScan = null!;
     private Label _lblHealthBlocks = null!;
     private TextBox _txtQuickSite = null!;
@@ -59,6 +61,9 @@ public sealed class MainForm : Form
     private CheckBox _chkIntimateGuard = null!;
     private CheckBox _chkIntimateAudio = null!;
     private CheckBox _chkAutoMovieAudio = null!;
+    private CheckBox _chkCommunitySkip = null!;
+    private Label _lblSkipLiveInfo = null!;
+    private ListBox _lstCustomSkips = null!;
     private RadioButton _rbActionSmart = null!;
     private RadioButton _rbActionBack = null!;
     private RadioButton _rbDrmWarn = null!;
@@ -338,11 +343,12 @@ public sealed class MainForm : Form
             Location = new Point(14, 12),
             AutoSize = true
         });
-        _lblHealthAi = CreateHealthRow(health, 42, "ONNX AI Engines:", "Loading best_320s + pordav4x3 + image_safety_xs + yamnet...");
+        _lblHealthAi = CreateHealthRow(health, 42, "ONNX AI Engines:", "Loading best_320s + pordav4x3 + image_safety_xs + mobileclip + yamnet...");
         _lblHealthOverlay = CreateHealthRow(health, 74, "Capture-Excluded Overlay:", "Checking WDA_EXCLUDEFROMCAPTURE...");
         _lblHealthAudio = CreateHealthRow(health, 106, "WASAPI Playback Audio AI:", "Waiting...");
-        _lblHealthScan = CreateHealthRow(health, 138, "Last Screen Scan:", "Waiting for first frame...");
-        _lblHealthBlocks = CreateHealthRow(health, 170, "Guard Interceptions:", "0 attempts blocked");
+        _lblHealthSkip = CreateHealthRow(health, 138, "Community Timestamp Skip:", "Checking...");
+        _lblHealthScan = CreateHealthRow(health, 170, "Last Screen Scan:", "Waiting for first frame...");
+        _lblHealthBlocks = CreateHealthRow(health, 202, "Guard Interceptions:", "0 attempts blocked");
         tlp.Controls.Add(health, 0, 2);
 
         page.Controls.Add(tlp);
@@ -431,7 +437,7 @@ public sealed class MainForm : Form
 
         var cardIntimate = MakeCard(14, 14, 880, 175);
         cardIntimate.Controls.Add(MakeTitle("Intimate Video, Scene & WASAPI Audio Guard", 14, 10));
-        _chkIntimateGuard = MakeCheck(cardIntimate, "Auto-Action on Intimate Scenes (image_safety_xs + kissing/bed pose + captions; Blur First, Then Act)", 16, 44);
+        _chkIntimateGuard = MakeCheck(cardIntimate, "Auto-Action on Intimate Scenes (SwiftFormer + MobileCLIP2-S0 + kissing/bed pose + audio)", 16, 44);
         _chkIntimateGuard.CheckedChanged += (_, _) =>
         {
             if (_isBindingUi) return;
@@ -445,21 +451,57 @@ public sealed class MainForm : Form
             }
             SaveIntimateSettings();
         };
-        _chkIntimateAudio = MakeCheck(cardIntimate, "System Playback Audio AI (Windows WASAPI Loopback + yamnet.onnx; strictly gated on non-silent audio)", 16, 82);
+        _chkIntimateAudio = MakeCheck(cardIntimate, "System Playback Audio AI (Windows WASAPI Loopback + yamnet.onnx; strictly visual-first gated)", 16, 82);
         _chkIntimateAudio.CheckedChanged += (_, _) => SaveIntimateSettings();
         _chkAutoMovieAudio = MakeCheck(cardIntimate, "Auto Audio Guard on Video Players (VLC, Stremio, Nuvio, MPV, Kodi, Browser video)", 16, 120);
         _chkAutoMovieAudio.CheckedChanged += (_, _) => SaveIntimateSettings();
         panel.Controls.Add(cardIntimate);
 
-        var cardAction = MakeCard(14, 202, 880, 125);
+        var cardSkip = MakeCard(14, 202, 880, 226);
+        cardSkip.Controls.Add(MakeTitle("Hybrid Community & Custom Timestamp Skip (CleanStream + MediaSession + MCF)", 14, 10));
+        _chkCommunitySkip = MakeCheck(cardSkip, "Auto-Skip Known Scenes Using CleanStream & Custom Timestamps (Instant AI fallback if unlisted)", 16, 42);
+        _chkCommunitySkip.CheckedChanged += (_, _) => SaveIntimateSettings();
+
+        _lblSkipLiveInfo = new Label
+        {
+            Text = "Windows MediaSession Sync Ready (Chrome, Brave, Edge, Firefox, VLC, Stremio)",
+            Location = new Point(16, 72),
+            Size = new Size(845, 22),
+            ForeColor = Color.FromArgb(56, 189, 248),
+            Font = new Font("Segoe UI", 8.8f, FontStyle.Bold)
+        };
+        cardSkip.Controls.Add(_lblSkipLiveInfo);
+
+        _lstCustomSkips = new ListBox
+        {
+            Location = new Point(16, 100),
+            Size = new Size(650, 108),
+            BackColor = BgSlate,
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        cardSkip.Controls.Add(_lstCustomSkips);
+
+        var btnAddCustomSkip = MakeButton("Add Timestamps / MCF...", Color.FromArgb(109, 40, 217), new Size(190, 32));
+        btnAddCustomSkip.Location = new Point(676, 100);
+        btnAddCustomSkip.Click += (_, _) => ShowAddCustomTimestampDialog();
+        cardSkip.Controls.Add(btnAddCustomSkip);
+
+        var btnDelCustomSkip = MakeButton("Remove Selected", Color.FromArgb(51, 65, 85), new Size(190, 32));
+        btnDelCustomSkip.Location = new Point(676, 140);
+        btnDelCustomSkip.Click += (_, _) => RemoveSelectedCustomSkip();
+        cardSkip.Controls.Add(btnDelCustomSkip);
+        panel.Controls.Add(cardSkip);
+
+        var cardAction = MakeCard(14, 442, 880, 125);
         cardAction.Controls.Add(MakeTitle("When Intimate Scene Triggers", 14, 10));
-        _rbActionSmart = MakeRadio(cardAction, "Smart Context (Reels/Shorts -> Next Reel; Movies/Players -> Skip Forward; Browser -> Pause & Close Tab)", 16, 42);
+        _rbActionSmart = MakeRadio(cardAction, "Smart Context (Reels/Shorts -> Next Reel; Movies/Players -> Endless +Skip Forward; Browser -> Close Tab)", 16, 42);
         _rbActionBack = MakeRadio(cardAction, "Always Exit Video (Blur First, Pause Playback & Close Tab / Back)", 16, 74);
         _rbActionSmart.CheckedChanged += (_, _) => SaveIntimateSettings();
         _rbActionBack.CheckedChanged += (_, _) => SaveIntimateSettings();
         panel.Controls.Add(cardAction);
 
-        var cardDrm = MakeCard(14, 340, 880, 148);
+        var cardDrm = MakeCard(14, 580, 880, 148);
         cardDrm.Controls.Add(MakeTitle("DRM Streaming Policy (Netflix, Prime Video, Hotstar, Chorki, Hoichoi)", 14, 10));
         _rbDrmWarn = MakeRadio(cardDrm, "Show Warning Notice once per session when DRM streaming may restrict capture", 16, 40);
         _rbDrmBlock = MakeRadio(cardDrm, "Auto-Block DRM Apps & Sites", 16, 70);
@@ -610,6 +652,7 @@ public sealed class MainForm : Form
                 _nudeDetector = new NudeNetOnnxDetector();
                 _genderDetector = new GenderPersonOnnxDetector();
                 _sceneDetector = new IntimateSceneOnnxDetector();
+                try { _clipDetector = new MobileClipIntimateOnnxDetector(); } catch { }
                 _audioDetector = new AudioIntimateOnnxDetector();
                 _audioMonitor = new WasapiAudioMonitor(_audioDetector);
                 _scanner = new ScreenScannerService(
@@ -619,7 +662,8 @@ public sealed class MainForm : Form
                     _genderDetector,
                     _sceneDetector,
                     _audioMonitor,
-                    _exitController);
+                    _exitController,
+                    _clipDetector);
             });
             _scanner!.Start();
             RefreshHealthLabels();
@@ -653,6 +697,7 @@ public sealed class MainForm : Form
             _chkIntimateGuard.Checked = _config.IntimateGuardEnabled;
             _chkIntimateAudio.Checked = _config.IntimateAudioEnabled;
             _chkAutoMovieAudio.Checked = _config.AutoMovieAudioEnabled;
+            _chkCommunitySkip.Checked = _config.CommunitySkipEnabled;
             _rbActionSmart.Checked = _config.IntimateActionMode == IntimateActionMode.SmartContext;
             _rbActionBack.Checked = _config.IntimateActionMode == IntimateActionMode.BackOnly;
             _rbDrmWarn.Checked = _config.DrmAppPolicy == DrmAppPolicy.WarnOnly;
@@ -687,6 +732,12 @@ public sealed class MainForm : Form
         foreach (string s in _config.CustomWebsites) _lstSites.Items.Add(s);
         _lstApps.Items.Clear();
         foreach (string a in _config.CustomApps) _lstApps.Items.Add(a + ".exe");
+        _lstCustomSkips.Items.Clear();
+        foreach (var entry in _config.CustomSkipEntries)
+        {
+            string segSummary = string.Join(", ", entry.Segments.Select(s => $"{CommunitySkipRules.FormatMs(s.StartMs)}-{CommunitySkipRules.FormatMs(s.EndMs)}"));
+            _lstCustomSkips.Items.Add($"{entry.DisplayTitle}  [{segSummary}]");
+        }
     }
 
     private void UpdateMasterButtons()
@@ -706,12 +757,21 @@ public sealed class MainForm : Form
         var snap = _scanner?.Health;
         if (snap != null)
         {
-            _lblHealthAi.Text = snap.DetectorReady ? "Ready (best_320s + pordav4x3 + image_safety_xs + yamnet)" : "Loading...";
+            _lblHealthAi.Text = snap.DetectorReady
+                ? (snap.ClipActive
+                    ? "Ready (best_320s + pordav4x3 + image_safety_xs + mobileclip + yamnet)"
+                    : "Ready (best_320s + pordav4x3 + image_safety_xs + yamnet)")
+                : "Loading...";
             _lblHealthAi.ForeColor = snap.DetectorReady ? Color.FromArgb(74, 222, 128) : Color.FromArgb(250, 204, 21);
             _lblHealthOverlay.Text = _overlay.IsOverlayActive ? "Active & Capture-Excluded (WDA_EXCLUDEFROMCAPTURE)" : "Active (Layered Window)";
             _lblHealthOverlay.ForeColor = Color.FromArgb(74, 222, 128);
             _lblHealthAudio.Text = snap.AudioStatus;
             _lblHealthAudio.ForeColor = snap.AudioActive ? Color.FromArgb(74, 222, 128) : Color.FromArgb(148, 163, 184);
+            string skipText = snap.ActiveSkipMatchInfo
+                ?? (_config.CommunitySkipEnabled ? "Ready (CleanStream + Custom MCF + MediaSession)" : "Off");
+            _lblHealthSkip.Text = skipText;
+            _lblHealthSkip.ForeColor = snap.ActiveSkipMatchInfo != null ? Color.FromArgb(56, 189, 248) : Color.FromArgb(148, 163, 184);
+            _lblSkipLiveInfo.Text = snap.ActiveSkipMatchInfo ?? "Windows MediaSession Sync Ready (Chrome, Brave, Edge, Firefox, VLC, Stremio)";
             long ageMs = Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - snap.LastFrameAtMs);
             _lblHealthScan.Text = snap.LastFrameAtMs == 0 ? "Waiting..." : (ageMs < 2000 ? $"Just now ({snap.ActiveBlurBoxCount} active blur regions)" : $"{ageMs / 1000}s ago");
             _trayStatusItem.Text = _config.ProtectionEnabled ? $"Status: Active ({snap.ActiveBlurBoxCount} blurs)" : "Status: Paused";
@@ -790,7 +850,62 @@ public sealed class MainForm : Form
         _config.IntimateGuardEnabled = _chkIntimateGuard.Checked;
         _config.IntimateAudioEnabled = _chkIntimateAudio.Checked;
         _config.AutoMovieAudioEnabled = _chkAutoMovieAudio.Checked;
+        _config.CommunitySkipEnabled = _chkCommunitySkip.Checked;
         _config.IntimateActionMode = _rbActionBack.Checked ? IntimateActionMode.BackOnly : IntimateActionMode.SmartContext;
+        SaveAndSync();
+    }
+
+    private void ShowAddCustomTimestampDialog()
+    {
+        using var dlg = new Form
+        {
+            Text = "Add Custom / MCF Skip Timestamps",
+            Size = new Size(520, 320),
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            BackColor = BgSlate,
+            ForeColor = Color.White
+        };
+
+        dlg.Controls.Add(new Label { Text = "Movie or Episode Title (e.g. Oppenheimer or The Body S01E06):", Location = new Point(16, 14), Size = new Size(470, 20) });
+        var txtTitle = new TextBox { Location = new Point(16, 38), Size = new Size(470, 26), BackColor = CardSlate, ForeColor = Color.White };
+        dlg.Controls.Add(txtTitle);
+
+        dlg.Controls.Add(new Label { Text = "Timestamps (e.g. 35:30-37:10, 01:14:48 -> 01:15:13 or CleanStream JSON):", Location = new Point(16, 74), Size = new Size(470, 20) });
+        var txtRanges = new TextBox { Location = new Point(16, 98), Size = new Size(470, 110), Multiline = true, ScrollBars = ScrollBars.Vertical, BackColor = CardSlate, ForeColor = Color.White };
+        dlg.Controls.Add(txtRanges);
+
+        var btnSave = MakeButton("Save Timestamps", Color.FromArgb(109, 40, 217), new Size(150, 32));
+        btnSave.Location = new Point(336, 224);
+        btnSave.Click += (_, _) =>
+        {
+            var segs = CommunitySkipRules.ParseCustomTimestampsInput(txtRanges.Text);
+            if (!_config.SaveCustomSkipEntry(txtTitle.Text, segs))
+            {
+                MessageBox.Show("Enter a valid title and at least one time range (e.g. 35:30-37:10).", BrandConfig.DesktopDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            SaveAndSync();
+            dlg.DialogResult = DialogResult.OK;
+            dlg.Close();
+        };
+        dlg.Controls.Add(btnSave);
+
+        dlg.ShowDialog(this);
+    }
+
+    private void RemoveSelectedCustomSkip()
+    {
+        int idx = _lstCustomSkips.SelectedIndex;
+        if (idx < 0 || idx >= _config.CustomSkipEntries.Count) return;
+        var entry = _config.CustomSkipEntries[idx];
+        if (!VerificationDialogForm.VerifyProtectionChange($"Remove custom timestamps for '{entry.DisplayTitle}'", _config.PasswordHash, this))
+        {
+            return;
+        }
+        _config.RemoveCustomSkipEntry(entry.Key);
         SaveAndSync();
     }
 
@@ -960,6 +1075,7 @@ public sealed class MainForm : Form
         _scanner?.Dispose();
         _audioMonitor?.Dispose();
         _audioDetector?.Dispose();
+        _clipDetector?.Dispose();
         _sceneDetector?.Dispose();
         _genderDetector?.Dispose();
         _nudeDetector?.Dispose();

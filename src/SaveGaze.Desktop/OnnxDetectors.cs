@@ -157,6 +157,76 @@ public static class ModelPathLocator
         return dest;
     }
 
+    public static unsafe void FillChwScaled01(Bitmap src, float[] dst, int targetW, int targetH, float gain = 1f)
+    {
+        if (gain <= 1.05f)
+        {
+            FillChw01(src, dst, targetW, targetH);
+            return;
+        }
+
+        using Bitmap? owned = (src.Width == targetW && src.Height == targetH) ? null : ResizeBitmap(src, targetW, targetH);
+        Bitmap bmp = owned ?? src;
+        var rect = new Rectangle(0, 0, targetW, targetH);
+        var data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            int channelSize = targetW * targetH;
+            byte* basePtr = (byte*)data.Scan0;
+            int stride = data.Stride;
+            float scale = gain / 255f;
+
+            for (int y = 0; y < targetH; y++)
+            {
+                byte* row = basePtr + y * stride;
+                int rowOff = y * targetW;
+                for (int x = 0; x < targetW; x++)
+                {
+                    int idx = rowOff + x;
+                    int pxOff = x * 4;
+                    dst[idx] = Math.Clamp(row[pxOff + 2] * scale, 0f, 1f);
+                    dst[idx + channelSize] = Math.Clamp(row[pxOff + 1] * scale, 0f, 1f);
+                    dst[idx + 2 * channelSize] = Math.Clamp(row[pxOff] * scale, 0f, 1f);
+                }
+            }
+        }
+        finally
+        {
+            bmp.UnlockBits(data);
+        }
+    }
+
+    public static Bitmap? CreateCenterSquareClipCrop(Bitmap source, IReadOnlyList<BoundingBox> focusBoxes)
+    {
+        try
+        {
+            int w = source.Width;
+            int h = source.Height;
+            if (w < 8 || h < 8) return null;
+            int activeTop = w >= h * 1.45f ? (int)(h * 0.10f) : 0;
+            int activeH = Math.Max(1, h - activeTop * 2);
+            int cropSize = Math.Max(1, Math.Min(w, activeH));
+
+            var primary = focusBoxes.Count > 2
+                ? focusBoxes.OrderByDescending(b => b.Width * b.Height).Take(2).ToList()
+                : focusBoxes;
+
+            int cropX = primary.Count > 0 && w > cropSize
+                ? Math.Clamp((int)(primary.Average(b => b.CenterX) - cropSize * 0.5f), 0, w - cropSize)
+                : Math.Max(0, (w - cropSize) / 2);
+            int cropY = Math.Clamp(activeTop + (activeH - cropSize) / 2, 0, Math.Max(0, h - cropSize));
+
+            using var square = source.Clone(new Rectangle(cropX, cropY, cropSize, cropSize), PixelFormat.Format32bppArgb);
+            return cropSize == 256
+                ? new Bitmap(square)
+                : ResizeBitmap(square, 256, 256);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public static unsafe BgraFrameSampler CaptureSampler(Bitmap bmp)
     {
         int w = bmp.Width;
@@ -200,34 +270,42 @@ public sealed class NudeNetOnnxDetector : IDisposable
         {
             float fullW = bitmap.Width;
             float fullH = bitmap.Height;
+            float aspectRatio = fullH / Math.Max(1f, fullW);
             var all = new List<Detection>(64);
 
-            all.AddRange(RunInference(bitmap, 0f, 0f, fullW, fullH));
+            all.AddRange(RunInference(bitmap, 0f, 0f));
 
-            // Desktop screens are landscape or tall; tile 2x2 quadrants so smaller thumbnails/grid feeds stay sharp
-            bool shouldTile = (includeQuadrants || all.Count >= 2) && Math.Max(fullW, fullH) >= 900f;
-            if (shouldTile)
+            bool shouldTile = includeQuadrants || all.Count >= 2 || aspectRatio < 0.78f;
+            if (shouldTile && aspectRatio > 1.30f && fullH > 600f)
             {
-                int quadW = Math.Max(1, (int)(fullW * 0.56f));
-                int rightX = Math.Clamp((int)(fullW * 0.44f), 0, bitmap.Width - 1);
-                int rightW = Math.Max(1, bitmap.Width - rightX);
-                int quadH = Math.Max(1, (int)(fullH * 0.56f));
-                int botY = Math.Clamp((int)(fullH * 0.44f), 0, bitmap.Height - 1);
-                int botH = Math.Max(1, bitmap.Height - botY);
-
+                int stripH = Math.Max(1, (int)(fullH * 0.58f));
+                int botY = Math.Clamp((int)(fullH * 0.42f), 0, bitmap.Height - 1);
                 (int x, int y, int w, int h)[] tiles =
                 [
-                    (0, 0, quadW, quadH),
-                    (rightX, 0, rightW, quadH),
-                    (0, botY, quadW, botH),
-                    (rightX, botY, rightW, botH)
+                    (0, 0, bitmap.Width, Math.Min(stripH, bitmap.Height)),
+                    (0, botY, bitmap.Width, Math.Max(1, bitmap.Height - botY))
                 ];
-
                 foreach (var (xOff, yOff, w, h) in tiles)
                 {
                     if (w <= 32 || h <= 32) continue;
                     using var tile = bitmap.Clone(new Rectangle(xOff, yOff, w, h), PixelFormat.Format32bppArgb);
-                    all.AddRange(RunInference(tile, xOff, yOff, w, h));
+                    all.AddRange(RunInference(tile, xOff, yOff));
+                }
+            }
+            else if (shouldTile && aspectRatio < 0.78f && fullW > 600f)
+            {
+                int stripW = Math.Max(1, (int)(fullW * 0.58f));
+                int rightX = Math.Clamp((int)(fullW * 0.42f), 0, bitmap.Width - 1);
+                (int x, int y, int w, int h)[] tiles =
+                [
+                    (0, 0, Math.Min(stripW, bitmap.Width), bitmap.Height),
+                    (rightX, 0, Math.Max(1, bitmap.Width - rightX), bitmap.Height)
+                ];
+                foreach (var (xOff, yOff, w, h) in tiles)
+                {
+                    if (w <= 32 || h <= 32) continue;
+                    using var tile = bitmap.Clone(new Rectangle(xOff, yOff, w, h), PixelFormat.Format32bppArgb);
+                    all.AddRange(RunInference(tile, xOff, yOff));
                 }
             }
 
@@ -237,21 +315,27 @@ public sealed class NudeNetOnnxDetector : IDisposable
             return consolidated.Where(det =>
             {
                 if (det.Label.IsFace()) return true;
+                bool hasNearFace = faces.Any(f =>
+                    MathF.Abs(f.Box.CenterX - det.Box.CenterX) < Math.Max(f.Box.Width * 2.5f, det.Box.Width * 1.5f) &&
+                    det.Box.Y1 >= f.Box.Y1 - 10f && det.Box.Y1 <= f.Box.Y2 + f.Box.Height * 6.0f);
                 if (det.Label.IsExposed())
                 {
-                    bool hasNearFace = faces.Any(f =>
-                        MathF.Abs(f.Box.CenterX - det.Box.CenterX) < Math.Max(f.Box.Width * 2.5f, det.Box.Width * 1.5f) &&
-                        det.Box.Y1 >= f.Box.Y1 - 10f && det.Box.Y1 <= f.Box.Y2 + f.Box.Height * 6.0f);
-                    return sampler.HasHumanSkin(det.Box, hasNearFace ? 0.05f : 0.15f, hasNearFace);
+                    return sampler.HasHumanSkin(det.Box, hasNearFace ? 0.05f : 0.14f, hasNearFace);
                 }
-                return faces.Count > 0 || sampler.HasHumanSkin(det.Box, 0.08f, false);
+                var contextRing = new BoundingBox(
+                    Math.Max(0f, det.Box.X1 - det.Box.Width * 0.15f),
+                    Math.Max(0f, det.Box.Y1 - det.Box.Height * 0.15f),
+                    det.Box.X2 + det.Box.Width * 0.15f,
+                    det.Box.Y2 + det.Box.Height * 0.15f);
+                return sampler.HasHumanSkin(contextRing, 0.05f, hasNearFace);
             }).ToList();
         }
     }
 
-    private List<Detection> RunInference(Bitmap tile, float offsetX, float offsetY, float tileW, float tileH)
+    private List<Detection> RunInference(Bitmap tile, float offsetX, float offsetY)
     {
-        ModelPathLocator.FillChw01(tile, _inputBuf, NudeNetFilterEngine.ModelWidth, NudeNetFilterEngine.ModelHeight);
+        var (scaleX, scaleY) = ModelPathLocator.FillTopLeftLetterboxChw01(
+            tile, _inputBuf, NudeNetFilterEngine.ModelWidth, NudeNetFilterEngine.ModelHeight);
         var tensor = new DenseTensor<float>(_inputBuf, [1, 3, NudeNetFilterEngine.ModelHeight, NudeNetFilterEngine.ModelWidth]);
         using var results = _session.Run([NamedOnnxValue.CreateFromTensor("images", tensor)]);
         var outTensor = results.First(r => r.Name == "output0").AsTensor<float>();
@@ -266,7 +350,7 @@ public sealed class NudeNetOnnxDetector : IDisposable
             }
         }
 
-        return NudeNetFilterEngine.PostProcess(_outRows, tileW, tileH, offsetX, offsetY, ConfidenceThreshold);
+        return NudeNetFilterEngine.PostProcessScaled(_outRows, scaleX, scaleY, offsetX, offsetY, ConfidenceThreshold);
     }
 
     public void Dispose() => _session.Dispose();
@@ -309,8 +393,8 @@ public sealed class GenderPersonOnnxDetector : IDisposable
             }
             else if (includeTiles && (fullH / fullW) > 1.35f && fullH > 600f)
             {
-                int stripH = Math.Max(1, (int)(fullH * 0.36f));
-                int[] offsets = [0, (int)(fullH * 0.22f), (int)(fullH * 0.44f), (int)(fullH * 0.64f)];
+                int stripH = Math.Max(1, (int)(fullH * 0.56f));
+                int[] offsets = [0, (int)(fullH * 0.44f)];
                 foreach (int yOff in offsets)
                 {
                     int safeH = Math.Min(stripH, bitmap.Height - yOff);
@@ -427,6 +511,75 @@ public sealed class AudioIntimateOnnxDetector : IDisposable
                 frameProbs[i] = outTensor[0, i];
             }
             return AudioIntimateRules.ScoreFrame(frameProbs, rms);
+        }
+    }
+
+    public void Dispose() => _session.Dispose();
+}
+
+/// <summary>
+/// On-device MobileCLIP2-S0 vision encoder (`mobileclip_vision.onnx` + `clip_intimate_prompts.json`)
+/// detecting clothed kissing, romantic embraces, and dark bed scenes across browsers & media players.
+/// </summary>
+public sealed class MobileClipIntimateOnnxDetector : IDisposable
+{
+    private const int InputSize = 256;
+
+    private readonly InferenceSession _session;
+    private readonly object _lock = new();
+    private readonly float[] _inputBuf = new float[3 * InputSize * InputSize];
+    private readonly string _inputName;
+    private readonly float[][] _promptEmbeddings;
+    private readonly int _positiveCount;
+
+    public MobileClipIntimateOnnxDetector()
+    {
+        string promptsJson = File.ReadAllText(ModelPathLocator.Resolve("clip_intimate_prompts.json"));
+        using var doc = System.Text.Json.JsonDocument.Parse(promptsJson);
+        _positiveCount = doc.RootElement.GetProperty("positive_count").GetInt32();
+        var embArr = doc.RootElement.GetProperty("embeddings");
+        _promptEmbeddings = new float[embArr.GetArrayLength()][];
+        int r = 0;
+        foreach (var rowEl in embArr.EnumerateArray())
+        {
+            var row = new float[rowEl.GetArrayLength()];
+            int c = 0;
+            foreach (var v in rowEl.EnumerateArray()) row[c++] = v.GetSingle();
+            _promptEmbeddings[r++] = row;
+        }
+
+        _session = new InferenceSession(ModelPathLocator.Resolve("mobileclip_vision.onnx"), ModelPathLocator.CreateDefaultOptions(2));
+        _inputName = _session.InputMetadata.Keys.FirstOrDefault() ?? "pixel_values";
+    }
+
+    public ClipIntimateScore? Classify(Bitmap sourceOrCenterCrop)
+    {
+        using Bitmap? ownedCrop = sourceOrCenterCrop.Width == sourceOrCenterCrop.Height
+            ? null
+            : ModelPathLocator.CreateCenterSquareClipCrop(sourceOrCenterCrop, []);
+        Bitmap square = ownedCrop ?? sourceOrCenterCrop;
+
+        var sampler = ModelPathLocator.CaptureSampler(square);
+        float? meanLuma = sampler.ComputeMeanVisualLuma();
+        if (meanLuma is not { } luma)
+        {
+            return new ClipIntimateScore(0f, -0.2f, 0f, 0.2f);
+        }
+
+        float darkGain = luma is >= 12f and <= 62f
+            ? Math.Clamp(75f / luma, 1.0f, 1.85f)
+            : 1.0f;
+
+        lock (_lock)
+        {
+            ModelPathLocator.FillChwScaled01(square, _inputBuf, InputSize, InputSize, darkGain);
+            var tensor = new DenseTensor<float>(_inputBuf, [1, 3, InputSize, InputSize]);
+            using var results = _session.Run([NamedOnnxValue.CreateFromTensor(_inputName, tensor)]);
+            var outTensor = results.First().AsTensor<float>();
+            int cols = outTensor.Dimensions.Length >= 2 ? outTensor.Dimensions[^1] : (int)outTensor.Length;
+            var emb = new float[cols];
+            for (int i = 0; i < cols; i++) emb[i] = outTensor.GetValue(i);
+            return MobileClipIntimateRules.Score(emb, _promptEmbeddings, _positiveCount);
         }
     }
 

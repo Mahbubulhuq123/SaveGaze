@@ -114,7 +114,10 @@ public sealed class SaveGazeRulesTests
         var vlc = IntimateExitRules.ClassifyDesktopContext("vlc", "Movie.mkv - VLC media player", "", true);
         Assert.Equal(MediaAppContext.MovieSeriesPlayer, vlc);
         Assert.Equal(ExitActionType.SkipSceneForward, IntimateExitRules.ChooseAction(vlc, IntimateActionMode.SmartContext, 0));
-        Assert.Equal(ExitActionType.PauseAndBack, IntimateExitRules.ChooseAction(vlc, IntimateActionMode.SmartContext, 2));
+        Assert.Equal(ExitActionType.SkipSceneForward, IntimateExitRules.ChooseAction(vlc, IntimateActionMode.SmartContext, 5));
+        Assert.Equal(ExitActionType.PauseAndBack, IntimateExitRules.ChooseAction(vlc, IntimateActionMode.BackOnly, 0));
+        Assert.True(IntimateExitRules.IsSocialFeedBrowse("chrome", "Home - Facebook.com", null, false));
+        Assert.False(IntimateExitRules.IsSocialFeedBrowse("chrome", "Reels - Facebook", "https://facebook.com/reel/123", false));
 
         var active = ContentGuardRules.BuildActiveDomains(["https://www.CustomSite.org/path"]);
         Assert.Equal("pornhub.com", ContentGuardRules.IsDomainBlocked("m.pornhub.com", active));
@@ -155,5 +158,91 @@ public sealed class SaveGazeRulesTests
         Assert.Equal("1.1.0", parsed!.VersionName);
         Assert.True(UpdateChecker.IsNewerVersion(parsed.VersionName, "1.0.0"));
         Assert.False(UpdateChecker.IsNewerVersion("1.0.0", "1.0.0"));
+    }
+
+    [Fact]
+    public void MobileClipScoringVisualAudioGateAndSafePostSkipHoldWorkCleanly()
+    {
+        var emb = new float[] { 1f, 0f, 0f, 0f };
+        var prompts = new[]
+        {
+            new[] { 0.90f, 0.10f, 0f, 0f }, // positive kiss/intimate
+            new[] { 0.20f, 0.98f, 0f, 0f }  // negative normal scene
+        };
+        var score = MobileClipIntimateRules.Score(emb, prompts, positiveCount: 1);
+        Assert.True(score.IntimateProb > 0.85f);
+        Assert.True(score.Margin > 0.50f);
+
+        Assert.False(MobileClipIntimateRules.HasVisualContent([2f, 2f, 2f, 2f]));
+        Assert.True(MobileClipIntimateRules.HasVisualContent([10f, 80f, 45f, 120f]));
+
+        // Safe CLIP blocks noisy low SwiftFormer scores from looping after a skip
+        var f1 = new Detection(NudeLabel.FaceMale, 0.85f, new BoundingBox(260, 380, 500, 650));
+        var f2 = new Detection(NudeLabel.FaceFemale, 0.88f, new BoundingBox(490, 390, 730, 660));
+        var safePostSkip = IntimateSceneRules.Evaluate(
+            [f1, f2], [], new SceneSafetyScores(0.01f, 0.44f, 0.55f), 0f, null, 1920, 1080,
+            clipKissProb: 0.30f, clipMargin: -0.02f, hasFreshVisualOverride: true);
+        Assert.False(safePostSkip.Triggered);
+
+        // Visual-first audio gate rejects audio triggers on clearly safe daylight scenes
+        Assert.False(IntimateSceneRules.IsVisualUnclearForAudio(
+            new SceneSafetyScores(0f, 0.05f, 0.95f), hasSemiNude: false, kissOrBedCue: false,
+            clipKissProb: 0.15f, clipMargin: -0.02f, hasFreshVisual: true));
+        Assert.True(IntimateSceneRules.IsVisualUnclearForAudio(
+            new SceneSafetyScores(0f, 0.05f, 0.95f), hasSemiNude: false, kissOrBedCue: false,
+            clipKissProb: 0f, clipMargin: -0.20f, hasFreshVisual: true));
+    }
+
+    [Fact]
+    public void CommunitySkipNormalizationCleanStreamParsingAndCustomConfigRoundTripWork()
+    {
+        var oppen = CommunitySkipRules.NormalizeTitle("Oppenheimer.2023.1080p.BluRay.x264-GROUP.mkv");
+        Assert.Equal("Oppenheimer", oppen.BaseTitle);
+        Assert.Equal(2023, oppen.Year);
+        Assert.Null(oppen.EpisodeTag);
+
+        var ep = CommunitySkipRules.NormalizeTitle("The.Body.S01E06.720p.WEB-DL");
+        Assert.Equal("The Body", ep.BaseTitle);
+        Assert.Equal("S01E06", ep.EpisodeTag);
+        Assert.Equal("the body|S01E06", CommunitySkipRules.NormalizeKey(ep.BaseTitle, ep.EpisodeTag));
+
+        const string cleanJson = """
+        {
+          "skips": [
+            {"startMs": 1392670, "endMs": 1487800, "category": "nudity", "severity": "high"},
+            {"startMs": 2000000, "endMs": 2010000, "category": "violence", "severity": "high"},
+            {"startMs": 4488570, "endMs": 4513630, "category": "sex", "severity": "medium"},
+            {"startMs": 4514200, "endMs": 4620290, "category": "nudity", "severity": "high"}
+          ]
+        }
+        """;
+        var parsed = CommunitySkipRules.ParseCleanStreamSkipsJson(cleanJson);
+        Assert.Equal(2, parsed.Count);
+        Assert.Equal(4620290L, parsed[1].EndMs);
+
+        var human = CommunitySkipRules.ParseCustomTimestampsInput("35:30-37:10, 01:14:48 -> 01:15:13");
+        Assert.Equal(2, human.Count);
+        Assert.Equal(2130000L, human[0].StartMs);
+
+        var cfg = new AppConfig();
+        Assert.True(cfg.SaveCustomSkipEntry("The Body S01E06", human));
+        string tmp = Path.Combine(Path.GetTempPath(), $"sg_test_{Guid.NewGuid():N}.json");
+        try
+        {
+            cfg.Save(tmp);
+            var reloaded = AppConfig.Load(tmp);
+            Assert.Single(reloaded.CustomSkipEntries);
+            Assert.Equal("the body|S01E06", reloaded.CustomSkipEntries[0].Key);
+        }
+        finally
+        {
+            if (File.Exists(tmp)) File.Delete(tmp);
+        }
+
+        var segs = new List<SkipSegment> { new(60_000L, 95_000L, "nudity") };
+        Assert.Null(CommunitySkipRules.FindActiveSkipWindow(58_000L, segs));
+        var hit = CommunitySkipRules.FindActiveSkipWindow(59_650L, segs);
+        Assert.NotNull(hit);
+        Assert.Equal(95_400L, hit!.TargetEndMs);
     }
 }

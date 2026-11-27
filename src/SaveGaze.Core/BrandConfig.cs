@@ -11,8 +11,8 @@ public static class BrandConfig
     public const string Subtitle = "On-Device AI Screen Shield & Content Guard";
     public const string ArabicTag = "حفظ البصر";
 
-    public const string AppVersion = "1.0.0";
-    public const int AppVersionCode = 10000;
+    public const string AppVersion = "1.1.0";
+    public const int AppVersionCode = 10100;
 
     // GitHub repository & PC release feed (isolated from Android v* releases via pc-v* tag prefix)
     public const string GitHubOwner = "Mahbubulhuq123";

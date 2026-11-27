@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SaveGaze",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAl/yvcPgXxhG2sCFm2ELCNun3oeMn0AUj5sBy+cxbiuFblaryqlfWj3xlLv1RJgP2CoQEjbvaQBiyyB+2muJM5l0Z+dmyI3a6/hfEhsFh/6iEoQZNbaJSVKJaeDbFfHhwAieGyTYOYgwqe9997TqpvZubXI54wnw1BednAT6+5PeNyKgS7bdWmzA9ow8SUQh8zJom6hHMgBNzfkT1r11I6u2RDWcbk9RjWQp+wIR5BNOv+XxUz4CxqB8bddESgOueNOHj7aAj4+vDk0t+Jk416HdBStxbnZKj6SSYZy7zE3JBqdmu4x7RMMpyNrex6I+5xaE7LbK8iPn7LWhR3UQaHQIDAQAB",
   "description": "SaveGaze PC browser guard — live search-bar keyword guard, domain blocking, 5-in-10m lockout, and native sync with SaveGaze AI screen shield.",
   "permissions": [

@@ -173,6 +173,17 @@ public sealed class WasapiAudioMonitor : IDisposable
         lock (_stateLock) StopInternal();
     }
 
+    public void ResetWindow()
+    {
+        lock (_stateLock)
+        {
+            _ringFill = 0;
+            _sinceLastHop = 0;
+            LastScoredAtMs = 0L;
+            LatestResult = new AudioIntimateResult(0f, "", 0f, false);
+        }
+    }
+
     private void StopInternal()
     {
         _running = false;

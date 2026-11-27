@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Version = "1.0.0",
   [switch]$SkipTests
 )
@@ -67,12 +67,14 @@ Remove-Item -Recurse -Force $SetupOut
 Write-Host "[5/5] Writing pc-version.json..."
 $SetupSize = (Get-Item $SetupExe).Length
 $Tag = "pc-v$Version"
+$parts = $Version.Split('.') | ForEach-Object { [int]($_ -replace '[^0-9]', '') }
+$vCode = ($parts[0] * 10000) + ($(if ($parts.Count -gt 1) { $parts[1] } else { 0 }) * 100) + $(if ($parts.Count -gt 2) { $parts[2] } else { 0 })
 $Meta = @{
-  versionCode = 10000
+  versionCode = $vCode
   versionName = $Version
   tagName = $Tag
   publishedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-  releaseNotes = "SaveGaze PC v${Version}: System-wide on-device AI Screen Blur (best_320s + pordav4x3), WDA_EXCLUDEFROMCAPTURE layered overlay, Face Blur toggle with jawline neck protection, Intimate Scene/Caption & WASAPI Loopback Audio Guard (image_safety_xs + yamnet), and enhanced Browser Extension."
+  releaseNotes = "SaveGaze PC v${Version}: Mobile v4.2 parity — MobileCLIP2-S0 clothed kissing/bed detector (mobileclip_vision + dark contrast boost), Hybrid Community Timestamp Skip (CleanStream + Custom MCF + Windows MediaSession seek), visual-first WASAPI audio gate, endless video-player skip loop, and refined NudeNet/skin filters."
   downloadUrl = "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/$Tag/SaveGaze-Setup-win-x64.exe"
   portableUrl = "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/$Tag/SaveGaze-PC-win-x64.zip"
   extensionUrl = "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/$Tag/SaveGaze-Extension.zip"
