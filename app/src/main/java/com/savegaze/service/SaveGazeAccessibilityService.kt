@@ -1125,6 +1125,13 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             val currentSignature = computeScreenSignature(bitmap, allExcluded)
             val screenChange = analyzeScreenChange(lastScreenSignature, currentSignature)
             lastScreenIsStatic = screenChange.isStatic
+            if (screenChange.isSceneCut) {
+                // Invalidate stale CLIP scores across scene cuts so a kissing shot never triggers on the next normal shot
+                clipGeneration.incrementAndGet()
+                lastClipScore = null
+                lastClipScoredMs = 0L
+                consecutiveIntimateHits = 0
+            }
 
             if (screenChange.isStatic && !didScrollRecently && (now - lastFullInferenceMs < 2_500L)) {
                 publishHealth {
@@ -1237,7 +1244,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     !screenChange.isStatic &&
                     !isSocialFeedBrowse &&
                     (activeContext != MediaAppContext.BROWSER_OR_GENERAL || lastHasSeekBarOrPlayer || isLandscapeFrame) &&
-                    now - lastClipLaunchMs >= 600L &&
+                    now - lastClipLaunchMs >= 400L &&
                     clipInferenceInFlight.compareAndSet(false, true)
                 ) {
                     lastClipLaunchMs = now
@@ -1268,7 +1275,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val freshAudioScore = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.score else 0f
                 val freshAudioLabel = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.topLabel else ""
                 val evalSafety = sceneSafety ?: if (!lastScreenIsStatic) null else lastSceneSafety
-                val freshClip = if (!isSocialFeedBrowse) lastClipScore?.takeIf { now - lastClipScoredMs < 2_600L } else null
+                val freshClip = if (!isSocialFeedBrowse) lastClipScore?.takeIf { now - lastClipScoredMs < 1_400L } else null
                 val rawSignals = IntimateSceneRules.evaluate(
                     detections = detections,
                     personBoxes = personBoxes,
@@ -1279,7 +1286,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     screenH = bHeight,
                     sensitivity = sensitivity,
                     clipKissProb = freshClip?.intimateProb ?: 0f,
-                    clipMargin = freshClip?.margin ?: 0f
+                    clipMargin = freshClip?.margin ?: 0f,
+                    allowDarkClipFallback = (activeContext == MediaAppContext.MOVIE_SERIES_PLAYER)
                 )
                 // On social home feeds (reading text/posts), blur boxes still protect media; never auto-scroll/back unless explicit nudity
                 val signals = if (isSocialFeedBrowse && rawSignals.triggered && !rawSignals.reason.contains("Explicit")) {

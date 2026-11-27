@@ -12,6 +12,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
@@ -34,14 +37,14 @@ object MobileClipIntimateRules {
         var sum = 0.0
         for (l in lumas) sum += l
         val mean = sum / lumas.size
-        if (mean < 18.0) return false
+        if (mean < 6.5) return false
         var varSum = 0.0
         for (l in lumas) {
             val d = l - mean
             varSum += d * d
         }
         val stdDev = sqrt(varSum / lumas.size)
-        return stdDev >= 12.0
+        return stdDev >= 5.0
     }
 
     fun score(
@@ -147,11 +150,16 @@ class MobileClipIntimateDetector(context: Context) {
             } else {
                 Bitmap.createBitmap(bitmap, cropX, cropY, cropSize, cropSize)
             }
-            if (!hasBitmapVisualContent(centerSquare)) {
+            val meanLuma = computeVisualLuma(centerSquare) ?: run {
                 if (centerSquare !== bitmap) centerSquare.recycle()
                 return@withContext ClipIntimateScore(0f, -0.2f, 0f, 0.2f)
             }
-            val buffer = centerSquare.toFloatBuffer(INPUT_SIZE, INPUT_SIZE)
+            val darkGain = if (meanLuma in 6.5f..72f) (95f / meanLuma).coerceIn(1.0f, 3.0f) else 1.0f
+            val buffer = if (darkGain > 1.05f) {
+                centerSquare.toBoostedFloatBuffer(INPUT_SIZE, INPUT_SIZE, darkGain)
+            } else {
+                centerSquare.toFloatBuffer(INPUT_SIZE, INPUT_SIZE)
+            }
             if (centerSquare !== bitmap) {
                 centerSquare.recycle()
             }
@@ -177,12 +185,13 @@ class MobileClipIntimateDetector(context: Context) {
         }
     }
 
-    private fun hasBitmapVisualContent(bmp: Bitmap): Boolean {
+    private fun computeVisualLuma(bmp: Bitmap): Float? {
         val w = bmp.width
         val h = bmp.height
-        if (w < 8 || h < 8) return false
+        if (w < 8 || h < 8) return null
         val lumas = FloatArray(256)
         var idx = 0
+        var sum = 0f
         for (r in 0 until 16) {
             val y = (r * h / 16).coerceIn(0, h - 1)
             for (c in 0 until 16) {
@@ -191,10 +200,38 @@ class MobileClipIntimateDetector(context: Context) {
                 val red = (px shr 16) and 0xFF
                 val green = (px shr 8) and 0xFF
                 val blue = px and 0xFF
-                lumas[idx++] = 0.299f * red + 0.587f * green + 0.114f * blue
+                val luma = 0.299f * red + 0.587f * green + 0.114f * blue
+                lumas[idx++] = luma
+                sum += luma
             }
         }
-        return MobileClipIntimateRules.hasVisualContent(lumas)
+        return if (MobileClipIntimateRules.hasVisualContent(lumas)) sum / lumas.size else null
+    }
+
+    private fun Bitmap.toBoostedFloatBuffer(width: Int, height: Int, gain: Float): FloatBuffer {
+        val resized = if (this.width == width && this.height == height) {
+            this
+        } else {
+            Bitmap.createScaledBitmap(this, width, height, true)
+        }
+        val pixels = IntArray(width * height)
+        resized.getPixels(pixels, 0, width, 0, 0, width, height)
+        if (resized !== this) {
+            resized.recycle()
+        }
+        val channelSize = width * height
+        val buf = ByteBuffer.allocateDirect(3 * channelSize * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+        val scale = gain / 255f
+        for (i in pixels.indices) {
+            val px = pixels[i]
+            buf.put(i, (((px shr 16) and 0xFF) * scale).coerceIn(0f, 1f))
+            buf.put(i + channelSize, (((px shr 8) and 0xFF) * scale).coerceIn(0f, 1f))
+            buf.put(i + 2 * channelSize, ((px and 0xFF) * scale).coerceIn(0f, 1f))
+        }
+        buf.rewind()
+        return buf
     }
 
     fun close() {

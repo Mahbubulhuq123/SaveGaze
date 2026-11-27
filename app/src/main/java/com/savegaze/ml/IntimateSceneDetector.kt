@@ -119,7 +119,8 @@ object IntimateSceneRules {
         screenH: Float,
         sensitivity: Float = 0.25f,
         clipKissProb: Float = 0f,
-        clipMargin: Float = 0f
+        clipMargin: Float = 0f,
+        allowDarkClipFallback: Boolean = false
     ): IntimateSignals {
         val explicitThresh = sensitivity.coerceIn(0.26f, 0.45f)
         val hasExplicit = detections.any { it.label in EXPLICIT_NUDITY_LABELS && it.confidence >= explicitThresh }
@@ -152,13 +153,17 @@ object IntimateSceneRules {
             )
         }
 
-        // 3. MobileCLIP2-S0 clothed kissing / bed / romantic embrace detector (catches PG-13 movie kissing)
-        // Require human presence (face/person/semi-nude/soft NSFW) so dark rooms, fights, and text feeds never false-trigger
-        val hasHumanCue = faces.isNotEmpty() || personBoxes.isNotEmpty() || hasSemiNude || nsfwProb >= 0.18f
-        if ((kissOrBedCue && clipKissProb >= 0.65f && clipMargin >= 0.020f) ||
-            (hasHumanCue && clipKissProb >= 0.78f && clipMargin >= 0.036f)
-        ) {
-            val isInstantKiss = kissOrBedCue && clipKissProb >= 0.65f && clipMargin >= 0.020f
+        // 3. MobileCLIP2-S0 clothed kissing / bed / romantic embrace detector (heterosexual & same-sex)
+        // - With 2+ close faces or human presence, triggers immediately in movie players (no 2-3s delay)
+        // - In dark bedroom scenes inside movie players where face detectors miss in low light, allow high-confidence CLIP fallback
+        val hasHumanCue = faces.isNotEmpty() || personBoxes.isNotEmpty() || hasSemiNude || nsfwProb >= 0.16f
+        val closePairClip = kissOrBedCue && clipKissProb >= 0.62f && clipMargin >= 0.015f
+        val humanBackedClip = hasHumanCue && clipKissProb >= 0.72f && clipMargin >= 0.025f
+        val darkMovieBedClip = allowDarkClipFallback && clipKissProb >= 0.80f && clipMargin >= 0.036f
+        if (closePairClip || humanBackedClip || darkMovieBedClip) {
+            val isInstantKiss = closePairClip ||
+                (allowDarkClipFallback && humanBackedClip) ||
+                (darkMovieBedClip && clipKissProb >= 0.88f && clipMargin >= 0.052f)
             return IntimateSignals(
                 triggered = true,
                 instant = isInstantKiss,

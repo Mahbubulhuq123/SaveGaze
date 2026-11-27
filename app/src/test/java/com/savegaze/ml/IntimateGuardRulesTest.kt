@@ -258,9 +258,10 @@ class IntimateGuardRulesTest {
         assertTrue(talkScore.intimateProb < 0.30f)
         assertTrue(talkScore.margin < 0f)
 
-        // Blank/black screens must fail visual content check
-        assertFalse(MobileClipIntimateRules.hasVisualContent(FloatArray(256) { 5f }))
+        // Blank/black screens must fail visual content check, while genuine dim night cinema frames pass
+        assertFalse(MobileClipIntimateRules.hasVisualContent(FloatArray(256) { 3f }))
         assertFalse(MobileClipIntimateRules.hasVisualContent(FloatArray(256) { 128f }))
+        assertTrue(MobileClipIntimateRules.hasVisualContent(FloatArray(256) { i -> if (i % 2 == 0) 6f else 18f }))
         assertTrue(MobileClipIntimateRules.hasVisualContent(FloatArray(256) { i -> if (i % 2 == 0) 30f else 180f }))
     }
 
@@ -280,7 +281,8 @@ class IntimateGuardRulesTest {
             screenH = 1080f,
             sensitivity = 0.25f,
             clipKissProb = 0.28f,
-            clipMargin = -0.02f
+            clipMargin = -0.02f,
+            allowDarkClipFallback = true
         )
         assertFalse(sfwDialogue.triggered)
 
@@ -293,30 +295,16 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.76f,
-            clipMargin = 0.025f
+            clipKissProb = 0.74f,
+            clipMargin = 0.026f,
+            allowDarkClipFallback = true
         )
         assertTrue(clipKiss.triggered)
         assertTrue(clipKiss.instant)
         assertTrue(clipKiss.reason.contains("CLIP"))
 
-        // Empty room / dark corridor without faces/persons/NSFW must NEVER false-trigger CLIP alone
-        val darkRoomNoPeople = IntimateSceneRules.evaluate(
-            detections = emptyList(),
-            personBoxes = emptyList(),
-            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.04f, sfw = 0.96f),
-            audioScore = 0f,
-            audioLabel = null,
-            screenW = 2400f,
-            screenH = 1080f,
-            sensitivity = 0.25f,
-            clipKissProb = 0.88f,
-            clipMargin = 0.050f
-        )
-        assertFalse(darkRoomNoPeople.triggered)
-
-        // Single-face tight kiss needs sustained 2-frame confirmation (not instant)
-        val tightKiss = IntimateSceneRules.evaluate(
+        // Single-face tight daylight kiss in movie player must fire INSTANTLY (no 2-3s delay)
+        val tightDaylightMovieKiss = IntimateSceneRules.evaluate(
             detections = listOf(rightFace),
             personBoxes = emptyList(),
             sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.04f, sfw = 0.96f),
@@ -325,11 +313,44 @@ class IntimateGuardRulesTest {
             screenW = 2400f,
             screenH = 1080f,
             sensitivity = 0.25f,
-            clipKissProb = 0.80f,
-            clipMargin = 0.040f
+            clipKissProb = 0.74f,
+            clipMargin = 0.028f,
+            allowDarkClipFallback = true
         )
-        assertTrue(tightKiss.triggered)
-        assertFalse(tightKiss.instant)
+        assertTrue(tightDaylightMovieKiss.triggered)
+        assertTrue(tightDaylightMovieKiss.instant)
+
+        // Dark bedroom kissing/bed scene in movie player (0 upright faces detected in dark lighting) still triggers
+        val darkBedMovieScene = IntimateSceneRules.evaluate(
+            detections = emptyList(),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.06f, sfw = 0.94f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2400f,
+            screenH = 1080f,
+            sensitivity = 0.25f,
+            clipKissProb = 0.83f,
+            clipMargin = 0.042f,
+            allowDarkClipFallback = true
+        )
+        assertTrue(darkBedMovieScene.triggered)
+
+        // Same dark room without faces on Social Reels (allowDarkClipFallback=false) must NOT false-trigger
+        val darkRoomReelsNoPeople = IntimateSceneRules.evaluate(
+            detections = emptyList(),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.04f, sfw = 0.96f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 1080f,
+            screenH = 2340f,
+            sensitivity = 0.25f,
+            clipKissProb = 0.83f,
+            clipMargin = 0.042f,
+            allowDarkClipFallback = false
+        )
+        assertFalse(darkRoomReelsNoPeople.triggered)
     }
 
     @Test
