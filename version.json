@@ -1,8 +1,8 @@
 {
-  "versionCode": 40000,
-  "versionName": "4.0",
-  "publishedAt": "2026-11-27T14:31:00Z",
-  "releaseNotes": "• New: Hybrid Community Timestamp Skip (CleanStream + MediaSession) — reads active player title & position from Notification Access, fetches verified CleanStream (377+ movies) nudity/sex timestamps, blurs first, and jumps directly to scene end via seekTo.\n• New: Custom Movie & Episode Timestamps — save time ranges (e.g. 35:30-37:10) or paste CleanStream/MCF JSON in Settings for offline 0-delay skips on any unlisted title.\n• Preserved: On-device AI safety net (MobileCLIP + NudeNet + Audio) runs automatically for unlisted content, kissing scenes, and social reels.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v4.0/SaveGaze-arm64-v8a.apk",
-  "apkSize": 110295962
+  "versionCode": 40100,
+  "versionName": "4.1",
+  "publishedAt": "2026-11-27T16:36:00Z",
+  "releaseNotes": "• Fix: Eliminated false skips on low-light normal scenes (dance, fight, close-up dialogue) by aligning Rule 4's CLIP safety gate with Rule 3, tightening CLIP continuation thresholds, and requiring horizontal aspect ratio for bed-pose overlap.\n• Includes all v4.0 Hybrid Community Timestamp Skip (CleanStream + MediaSession + custom MCF store + on-device AI fallback) features.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v4.1/SaveGaze-arm64-v8a.apk",
+  "apkSize": 110295942
 }
