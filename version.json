@@ -1,8 +1,8 @@
 {
-  "versionCode": 20700,
-  "versionName": "2.7",
-  "publishedAt": "2026-11-27T06:10:00Z",
-  "releaseNotes": "• Fix: Stop Endless Normal-Scene Skipping in Movies — removed generic movie/nudity MobileCLIP prompt tokens that fired 0.856 on black/transition screens (now 0.0003 on black & dark UI), added visual luma/variance guard, required human face/person presence + 2-frame confirmation when faces aren't locked together, and discarded stale in-flight CLIP jobs across +10s skips.\n• Fix: Stop Facebook Feed & Reels False Auto-Scroll — narrowed REEL_VIEW_HINTS so Home Feed \"Reels\" tabs don't trigger REELS_SHORT, stopped auto-scroll/back on social home feeds while keeping real-time blur active, and tightened Reels CLIP corroboration.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.7/SaveGaze-arm64-v8a.apk",
-  "apkSize": 110235410
+  "versionCode": 20800,
+  "versionName": "2.8",
+  "publishedAt": "2026-11-27T11:30:00Z",
+  "releaseNotes": "• Fix: Dark Bedroom & Same-Sex Intimacy Detection — replaced heterosexual-only & dimly-lit negative bias with gender-neutral kissing/bed prompts (including same-sex couples), lowered hasVisualContent floor (mean>=6.5, stdDev>=5.0) while solid black/shield stay <0.01, added dark-scene auto-brightness gain, and enabled dark movie bed fallback when face detection misses in low light.\n• Fix: Zero Post-Scene Late Triggers & Faster Kiss Skip — clears stale CLIP cache on scene cuts (1.4s expiry), scans CLIP every 400ms, and makes human-backed movie kisses trigger immediately.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.8/SaveGaze-arm64-v8a.apk",
+  "apkSize": 110235798
 }
