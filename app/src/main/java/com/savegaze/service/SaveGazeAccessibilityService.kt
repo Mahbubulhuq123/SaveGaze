@@ -228,6 +228,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
     private var consecutiveIntimateHits = 0
     private var consecutiveAudioHits = 0
     private var consecutiveSkipsOnSameVideo = 0
+    private var cleanFramesSinceSkip = 0
     private var lastIntimateActionMs = 0L
     private val drmWarnedPackages = mutableSetOf<String>()
     private var powerManager: PowerManager? = null
@@ -510,6 +511,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     consecutiveIntimateHits = 0
                     consecutiveAudioHits = 0
                     consecutiveSkipsOnSameVideo = 0
+                    cleanFramesSinceSkip = 0
                     lastTreeHints = emptySet()
                     lastHasSeekBarOrPlayer = false
                     overlayManager?.clearBlurRegions()
@@ -886,8 +888,11 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
 
                     val baseInterval = preferencesManager?.getScanInterval() ?: 250L
+                    val verifyingPostSkip = consecutiveSkipsOnSameVideo in 1..11 &&
+                        (System.currentTimeMillis() - lastIntimateActionMs <= 5_500L)
                     val interval = when {
                         !enabled || isIdleOrSystemPackage(lastForegroundPackage) -> 1_100L
+                        verifyingPostSkip -> 140L
                         lastScreenIsStatic -> 950L
                         activeBlurBoxes.isNotEmpty() -> minOf(maxOf(baseInterval, 240L), 300L)
                         else -> minOf(maxOf(baseInterval, 260L), 340L)
@@ -1036,9 +1041,30 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         val pkg = lastForegroundPackage ?: return
         if (isIdleOrSystemPackage(pkg)) return
 
+        val now = System.currentTimeMillis()
+        val freshClipScore = lastClipScore?.takeIf { now - lastClipScoredMs < 2_500L }
+        val freshSafety = lastSceneSafety?.takeIf { now - lastFullInferenceMs < 2_500L }
+        val hasFreshVisual = (freshClipScore != null) || (freshSafety != null)
+        val visualUnclear = IntimateSceneRules.isVisualUnclearForAudio(
+            sceneSafety = freshSafety,
+            hasSemiNude = activeBlurBoxes.isNotEmpty(),
+            kissOrBedCue = false,
+            clipKissProb = freshClipScore?.intimateProb ?: 0f,
+            clipMargin = freshClipScore?.margin ?: 0f,
+            hasFreshVisual = hasFreshVisual
+        )
+        if (result.score >= 0.35f && result.topLabel.isNotBlank()) {
+            Log.i(TAG, "Audio score=${result.score} label=${result.topLabel} unclear=$visualUnclear pkg=$pkg")
+        }
+        if (!visualUnclear) {
+            consecutiveAudioHits = 0
+            return
+        }
+
+        val requiredAudioHits = if (consecutiveSkipsOnSameVideo in 1..11 && (now - lastIntimateActionMs <= 5_500L)) 2 else 3
         if (result.score >= 0.55f && result.topLabel.isNotBlank()) {
             consecutiveAudioHits++
-            if (consecutiveAudioHits >= 3) {
+            if (consecutiveAudioHits >= requiredAudioHits) {
                 consecutiveAudioHits = 0
                 serviceScope.launch(Dispatchers.Main) {
                     val signals = IntimateSignals(
@@ -1154,7 +1180,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             val recentAudioActive = now - lastAudioScoredMs < 2_000L && lastAudioResult.score >= 0.25f
 
             // Run NudeNet + PordaV4x3 + SwiftFormer concurrently on Dispatchers.Default
-            val runSceneClassifier = intimateGuardEnabled && (!screenChange.isStatic || activeBlurBoxes.isNotEmpty() || recentAudioActive)
+            val runSceneClassifier = intimateGuardEnabled && (!screenChange.isStatic || isActiveVideoPlayback || activeBlurBoxes.isNotEmpty() || recentAudioActive)
             val (detections: List<Detection>, personBoxes: List<PersonGenderBox>, sceneSafety: SceneSafetyScores?) = withContext(Dispatchers.Default) {
                 val nudeJob = async { currentDetector.detect(bitmap, includeQuadrants = runQuadrantTiles) }
                 val genderJob = async { genderPersonDetector?.detect(bitmap) ?: emptyList() }
@@ -1249,7 +1275,8 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 ) {
                     lastClipLaunchMs = now
                     val launchGen = clipGeneration.get()
-                    val clipCrop = createCenterSquareClipCrop(bitmap, filtered.faces.map { it.box })
+                    val clipFocusBoxes = filtered.faces.map { it.box }.ifEmpty { personBoxes.map { it.box } }
+                    val clipCrop = createCenterSquareClipCrop(bitmap, clipFocusBoxes)
                     if (clipCrop != null) {
                         serviceScope.launch(Dispatchers.Default) {
                             try {
@@ -1274,8 +1301,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 val audioActive = intimateAudioEnabled || (autoMovieAudioCastEnabled && mediaProjection != null)
                 val freshAudioScore = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.score else 0f
                 val freshAudioLabel = if (now - lastAudioScoredMs < 2_000L && audioActive) lastAudioResult.topLabel else ""
-                val evalSafety = sceneSafety ?: if (!lastScreenIsStatic) null else lastSceneSafety
+                val evalSafety = sceneSafety ?: if (!lastScreenIsStatic && !isActiveVideoPlayback) null else lastSceneSafety
                 val freshClip = if (!isSocialFeedBrowse) lastClipScore?.takeIf { now - lastClipScoredMs < 2_200L } else null
+                val hasFreshVisual = (evalSafety != null) || (freshClip != null)
+                val continuingIntimateScene = (activeContext == MediaAppContext.MOVIE_SERIES_PLAYER) &&
+                    consecutiveSkipsOnSameVideo in 1..11 &&
+                    (now - lastIntimateActionMs <= 5_500L)
                 val rawSignals = IntimateSceneRules.evaluate(
                     detections = detections,
                     personBoxes = personBoxes,
@@ -1287,7 +1318,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     sensitivity = sensitivity,
                     clipKissProb = freshClip?.intimateProb ?: 0f,
                     clipMargin = freshClip?.margin ?: 0f,
-                    allowDarkClipFallback = (activeContext == MediaAppContext.MOVIE_SERIES_PLAYER)
+                    allowDarkClipFallback = (activeContext == MediaAppContext.MOVIE_SERIES_PLAYER),
+                    continuingIntimateScene = continuingIntimateScene,
+                    hasFreshVisual = hasFreshVisual
                 )
                 // On social home feeds (reading text/posts), blur boxes still protect media; never auto-scroll/back unless explicit nudity
                 val signals = if (isSocialFeedBrowse && rawSignals.triggered && !rawSignals.reason.contains("Explicit")) {
@@ -1307,6 +1340,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                         if (consecutiveIntimateHits >= neededHits && (now - lastIntimateActionMs >= 1_400L)) {
                             Log.i(TAG, "Triggering intimate action: ${signals.reason} (conf=${signals.confidence}, pkg=$activePkg)")
                             consecutiveIntimateHits = 0
+                            cleanFramesSinceSkip = 0
                             serviceScope.launch(Dispatchers.Main) {
                                 triggerIntimateAction(signals)
                             }
@@ -1314,8 +1348,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
                 } else {
                     consecutiveIntimateHits = (consecutiveIntimateHits - 1).coerceAtLeast(0)
-                    if (now - lastIntimateActionMs >= 6_000L) {
+                    if (consecutiveSkipsOnSameVideo > 0 && (freshClip != null || sceneSafety != null)) {
+                        cleanFramesSinceSkip++
+                    }
+                    if ((cleanFramesSinceSkip >= 2 && (now - lastIntimateActionMs >= 1_800L)) || (now - lastIntimateActionMs >= 6_000L)) {
                         consecutiveSkipsOnSameVideo = 0
+                        cleanFramesSinceSkip = 0
                     }
                 }
             }
@@ -1533,8 +1571,13 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             val activeTop = if (w >= h * 1.45f) (h * 0.10f).toInt() else 0
             val activeH = (h - activeTop * 2).coerceAtLeast(1)
             val cropSize = minOf(w, activeH).coerceAtLeast(1)
-            val cropX = if (faceBoxes.isNotEmpty() && w > cropSize) {
-                val centerFocus = faceBoxes.map { it.centerX }.average().toFloat()
+            val primaryBoxes = if (faceBoxes.size > 2) {
+                faceBoxes.sortedByDescending { it.width * it.height }.take(2)
+            } else {
+                faceBoxes
+            }
+            val cropX = if (primaryBoxes.isNotEmpty() && w > cropSize) {
+                val centerFocus = primaryBoxes.map { it.centerX }.average().toFloat()
                 (centerFocus - cropSize / 2f).toInt().coerceIn(0, w - cropSize)
             } else {
                 ((w - cropSize) / 2).coerceAtLeast(0)
@@ -1628,6 +1671,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 lastAudioScoredMs = 0L
                 consecutiveIntimateHits = 0
                 consecutiveAudioHits = 0
+                cleanFramesSinceSkip = 0
                 try {
                     delay(250L)
                 } finally {

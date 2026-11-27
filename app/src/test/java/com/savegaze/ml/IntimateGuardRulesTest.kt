@@ -372,6 +372,85 @@ class IntimateGuardRulesTest {
     }
 
     @Test
+    fun visualFirstBlocksAudioFalseTriggerOnClearSafeFrameButAllowsUnclearFrames() {
+        val clearSafeFrameWithAudio = IntimateSceneRules.evaluate(
+            detections = listOf(Detection(NudeLabel.FACE_MALE, 0.85f, BoundingBox(400f, 200f, 620f, 440f))),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.05f, sfw = 0.95f),
+            audioScore = 0.78f,
+            audioLabel = "Groan",
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.14f,
+            clipMargin = -0.09f,
+            allowDarkClipFallback = true
+        )
+        assertFalse(clearSafeFrameWithAudio.triggered)
+
+        val darkOccludedFrameWithAudio = IntimateSceneRules.evaluate(
+            detections = emptyList(),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.06f, sfw = 0.94f),
+            audioScore = 0.62f,
+            audioLabel = "Moan",
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0f,
+            clipMargin = -0.20f,
+            allowDarkClipFallback = true
+        )
+        assertTrue(darkOccludedFrameWithAudio.triggered)
+
+        val borderlineVisualWithAudio = IntimateSceneRules.evaluate(
+            detections = emptyList(),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.26f, sfw = 0.74f),
+            audioScore = 0.42f,
+            audioLabel = "Moan",
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.56f,
+            clipMargin = 0.002f,
+            allowDarkClipFallback = true
+        )
+        assertTrue(borderlineVisualWithAudio.triggered)
+    }
+
+    @Test
+    fun continuingSkipChainSustainsOverLongIntimateScenesAndStopsOnNormalTransition() {
+        val stillIntimate = IntimateSceneRules.evaluate(
+            detections = emptyList(),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.12f, sfw = 0.88f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.74f,
+            clipMargin = 0.020f,
+            allowDarkClipFallback = true,
+            continuingIntimateScene = true
+        )
+        assertTrue(stillIntimate.triggered)
+        assertTrue(stillIntimate.instant)
+
+        val normalTransitionedFrame = IntimateSceneRules.evaluate(
+            detections = emptyList(),
+            personBoxes = emptyList(),
+            sceneSafety = SceneSafetyScores(nsfl = 0f, nsfw = 0.04f, sfw = 0.96f),
+            audioScore = 0f,
+            audioLabel = null,
+            screenW = 2340f,
+            screenH = 1080f,
+            clipKissProb = 0.55f,
+            clipMargin = 0.005f,
+            allowDarkClipFallback = true,
+            continuingIntimateScene = true
+        )
+        assertFalse(normalTransitionedFrame.triggered)
+    }
+
+    @Test
     fun facebookFeedWithReelsTabIsNotMisclassifiedAsReelsPlayer() {
         val fbHomeFeedWithReelsTab = IntimateExitRules.classifyContext(
             packageName = "com.facebook.katana",
