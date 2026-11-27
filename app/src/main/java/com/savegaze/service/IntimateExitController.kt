@@ -179,10 +179,7 @@ object IntimateExitRules {
                 if (consecutiveSkipsOnSameVideo < 3) ExitActionType.NEXT_REEL_SWIPE
                 else ExitActionType.PAUSE_AND_BACK
             }
-            MediaAppContext.MOVIE_SERIES_PLAYER -> {
-                if (consecutiveSkipsOnSameVideo < 2) ExitActionType.SKIP_SCENE_FORWARD
-                else ExitActionType.PAUSE_AND_BACK
-            }
+            MediaAppContext.MOVIE_SERIES_PLAYER -> ExitActionType.SKIP_SCENE_FORWARD
             MediaAppContext.BROWSER_OR_GENERAL -> ExitActionType.PAUSE_AND_BACK
         }
     }

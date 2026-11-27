@@ -1273,7 +1273,7 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 if (signals.triggered) {
                     consecutiveIntimateHits++
                     val neededHits = if (signals.instant) 1 else 2
-                    if (consecutiveIntimateHits >= neededHits && (now - lastIntimateActionMs >= 2_200L)) {
+                    if (consecutiveIntimateHits >= neededHits && (now - lastIntimateActionMs >= 1_200L)) {
                         Log.i(TAG, "Triggering intimate action: ${signals.reason} (conf=${signals.confidence}, pkg=$activePkg)")
                         consecutiveIntimateHits = 0
                         serviceScope.launch(Dispatchers.Main) {
@@ -1282,6 +1282,9 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
                 } else {
                     consecutiveIntimateHits = (consecutiveIntimateHits - 1).coerceAtLeast(0)
+                    if (now - lastIntimateActionMs >= 6_000L) {
+                        consecutiveSkipsOnSameVideo = 0
+                    }
                 }
             }
 
@@ -1520,13 +1523,13 @@ class SaveGazeAccessibilityService : AccessibilityService() {
 
     private fun triggerIntimateAction(signals: com.savegaze.ml.IntimateSignals) {
         val now = System.currentTimeMillis()
-        if (now - lastIntimateActionMs < 2_200L) return
+        if (now - lastIntimateActionMs < 1_200L) return
         if (!intimateActionInProgress.compareAndSet(false, true)) return
 
         val pkg = lastForegroundPackage ?: ""
         val (freshHints, freshSeekBar) = inspectCurrentMediaHints()
         val combinedHints = lastTreeHints + freshHints
-        val hasSeekOrPlayer = lastHasSeekBarOrPlayer || freshSeekBar
+        val hasSeekOrPlayer = lastHasSeekBarOrPlayer || freshSeekBar || (mediaProjection != null && !intimateAudioEnabled)
         val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
         val mediaContext = IntimateExitRules.classifyContext(
@@ -1564,18 +1567,12 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                     }
                     ExitActionType.SKIP_SCENE_FORWARD -> {
                         consecutiveSkipsOnSameVideo++
-                        var clickedNode = tryClickForwardNode()
+                        val clickedNode = tryClickForwardNode()
                         if (!clickedNode) {
-                            // Wake hidden player HUD controls first, then try node forward or double-tap + MediaSession FFWD
-                            dispatchSingleTap(w * 0.80f, h * 0.48f)
-                            delay(130L)
-                            clickedNode = tryClickForwardNode()
-                            if (!clickedNode) {
-                                performSkipSceneForward(w, h)
-                                dispatchMediaFastForward()
-                            }
+                            performSkipSceneForward(w, h)
+                            dispatchMediaFastForward()
                         }
-                        delay(1_150L)
+                        delay(950L)
                     }
                     ExitActionType.PAUSE_AND_BACK -> {
                         consecutiveSkipsOnSameVideo = 0
@@ -1587,6 +1584,13 @@ class SaveGazeAccessibilityService : AccessibilityService() {
                 trackedBoxes.clear()
                 activeBlurBoxes = emptyList()
                 lastScreenSignature = null
+                lastClipScore = null
+                lastClipScoredMs = 0L
+                lastClipLaunchMs = 0L
+                lastSceneSafety = null
+                lastAudioScoredMs = 0L
+                consecutiveIntimateHits = 0
+                consecutiveAudioHits = 0
                 overlayManager?.clearBlurRegions()
                 overlayManager?.hideIntimateShieldOverlay()
                 lastIntimateActionMs = System.currentTimeMillis()
@@ -1647,8 +1651,10 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         val text = node.text?.toString()?.lowercase() ?: ""
         val viewId = node.viewIdResourceName?.lowercase() ?: ""
         val matchesForward = (desc.contains("forward") || desc.contains("skip forward") ||
+            desc.contains("seek forward") || desc.contains("+10") || desc.contains("10s") ||
             desc.contains("10 seconds") || desc.contains("15 seconds") || desc.contains("30 seconds") ||
-            text.contains("forward") || viewId.contains("fast_forward") || viewId.contains("ffwd")) &&
+            text.contains("forward") || text.contains("+10") ||
+            viewId.contains("fast_forward") || viewId.contains("ffwd") || viewId.contains("forward_10")) &&
             node.isClickable
         if (matchesForward) {
             return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -1661,14 +1667,6 @@ class SaveGazeAccessibilityService : AccessibilityService() {
             if (hit) return true
         }
         return false
-    }
-
-    private fun dispatchSingleTap(x: Float, y: Float) {
-        val path = Path().apply { moveTo(x, y) }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, 30L))
-            .build()
-        dispatchGesture(gesture, null, null)
     }
 
     private fun dispatchMediaFastForward() {
@@ -1684,10 +1682,10 @@ class SaveGazeAccessibilityService : AccessibilityService() {
         val tapX = w * 0.82f
         val tapY = h * 0.48f
         val builder = GestureDescription.Builder()
-        // 3 rapid right-side taps trigger +10s/+20s seek in YouTube, ExoPlayer, Nuvio, Stremio, VLC & HTML5 players
-        for (i in 0..2) {
+        // Crisp right-side double-tap triggers +10s/+15s forward seek in YouTube, ExoPlayer, Nuvio, Stremio, VLC & web players
+        for (i in 0..1) {
             val p = Path().apply { moveTo(tapX, tapY) }
-            builder.addStroke(GestureDescription.StrokeDescription(p, i * 115L, 25L))
+            builder.addStroke(GestureDescription.StrokeDescription(p, i * 85L, 25L))
         }
         dispatchGesture(builder.build(), null, null)
     }

@@ -156,8 +156,16 @@ class IntimateGuardRulesTest {
             IntimateExitRules.chooseAction(nuvio, IntimateActionMode.SMART_CONTEXT, 0)
         )
         assertEquals(
-            ExitActionType.PAUSE_AND_BACK,
+            ExitActionType.SKIP_SCENE_FORWARD,
             IntimateExitRules.chooseAction(nuvio, IntimateActionMode.SMART_CONTEXT, 2)
+        )
+        assertEquals(
+            ExitActionType.SKIP_SCENE_FORWARD,
+            IntimateExitRules.chooseAction(nuvio, IntimateActionMode.SMART_CONTEXT, 10)
+        )
+        assertEquals(
+            ExitActionType.PAUSE_AND_BACK,
+            IntimateExitRules.chooseAction(nuvio, IntimateActionMode.BACK_ONLY, 0)
         )
 
         val chromeArticle = IntimateExitRules.classifyContext(
