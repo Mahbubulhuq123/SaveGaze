@@ -1,8 +1,8 @@
 {
-  "versionCode": 20900,
-  "versionName": "2.9",
-  "publishedAt": "2026-11-27T11:59:00Z",
-  "releaseNotes": "• Fix: Stop Dance, Fight & Pre-Scene False Skips — rebuilt CLIP prompts to exclude hugging and explicitly contrast dancing, fighting, and close talking; capped dark brightness gain at 1.85x; and prevented double-counting one cached CLIP score on neededHits=2.\n• Fix: Zero Post-Scene Trailing Loop — clears AudioIntimateDetector ring buffer (resetWindow) after each +10s skip and waits 1.15s shielded + 250ms post-hide settle so ExoPlayer finishes buffering the seeked chunk before re-scanning.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v2.9/SaveGaze-arm64-v8a.apk",
-  "apkSize": 110238062
+  "versionCode": 30000,
+  "versionName": "3.0",
+  "publishedAt": "2026-11-27T12:51:00Z",
+  "releaseNotes": "• Fix: Dark-Scene & Kissing Detection Stall — keeps video-player scanning active in dark movie scenes instead of sleeping as static frames, removes pre-hit reset on shot cuts inside intimate scenes, and widens fresh CLIP timing tolerance.\n• Fix: Log-Calibrated CLIP Thresholds — tuned instant and 2-hit intimate detection bounds to real on-device Nuvio scores while keeping safe low-light scenes below trigger levels.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v3.0/SaveGaze-arm64-v8a.apk",
+  "apkSize": 110238050
 }
