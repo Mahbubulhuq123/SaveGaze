@@ -1,8 +1,8 @@
 {
-  "versionCode": 30200,
-  "versionName": "3.2",
-  "publishedAt": "2026-11-27T14:02:00Z",
-  "releaseNotes": "• Fix: Stop Normal-Scene Skip Loop (conf=0.58) — blocked low SwiftFormer noise from overriding safe MobileCLIP scores during post-skip continuation and prevented paused/buffering static frames from re-triggering.\n• Fix: Balance Both Clothed Kissing & Dark Bed Scenes — refined MobileCLIP prompts for shirtless/dark bedroom intimacy alongside clothed kisses, and calibrated dark bed instant trigger to >= 0.85 / 0.028.",
-  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v3.2/SaveGaze-arm64-v8a.apk",
-  "apkSize": 110249566
+  "versionCode": 40000,
+  "versionName": "4.0",
+  "publishedAt": "2026-11-27T14:31:00Z",
+  "releaseNotes": "• New: Hybrid Community Timestamp Skip (CleanStream + MediaSession) — reads active player title & position from Notification Access, fetches verified CleanStream (377+ movies) nudity/sex timestamps, blurs first, and jumps directly to scene end via seekTo.\n• New: Custom Movie & Episode Timestamps — save time ranges (e.g. 35:30-37:10) or paste CleanStream/MCF JSON in Settings for offline 0-delay skips on any unlisted title.\n• Preserved: On-device AI safety net (MobileCLIP + NudeNet + Audio) runs automatically for unlisted content, kissing scenes, and social reels.",
+  "downloadUrl": "https://github.com/Mahbubulhuq123/SaveGaze/releases/download/v4.0/SaveGaze-arm64-v8a.apk",
+  "apkSize": 110295962
 }
